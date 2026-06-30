@@ -267,12 +267,6 @@
           return dialogs[0] || null;
         };
 
-        const getSelectedMaterialIndex = () => {
-          const raw = jobPayload.selected_material_index ?? jobPayload.reference_media_rank;
-          const parsed = Number.parseInt(String(raw ?? ""), 10);
-          return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
-        };
-
         const getReferenceMediaKind = () => {
           const raw = String(jobPayload.reference_media_kind || "").trim().toLowerCase();
           return raw === "image" ? "image" : "video";
@@ -280,15 +274,7 @@
 
         const getReferenceMediaId = () => String(jobPayload.reference_media_id || "").trim();
 
-        const getReferenceTexts = () =>
-          Array.isArray(jobPayload.reference_texts)
-            ? jobPayload.reference_texts
-              .map((item) => String(item || "").trim())
-              .filter((item) => item.length >= 3)
-              .slice(0, 6)
-            : [];
-
-        const collectReferenceMatchStrings = (node) => {
+        const collectReferenceMediaIdStrings = (node) => {
           if (!(node instanceof Element)) return [];
           const values = [];
           const seen = new Set();
@@ -299,61 +285,34 @@
             values.push(normalized);
           };
 
-          pushValue(textOf(node));
-          pushValue(node.getAttribute("aria-label"));
-          pushValue(node.getAttribute("title"));
-          pushValue(node.getAttribute("alt"));
-          pushValue(node.getAttribute("data-testid"));
-          pushValue(node.getAttribute("data-id"));
-          pushValue(node.getAttribute("data-key"));
-          pushValue(node.getAttribute("href"));
           pushValue(node.getAttribute("src"));
-          pushValue(node.getAttribute("poster"));
 
-          Array.from(node.querySelectorAll("[aria-label], [title], [alt], [data-testid], [data-id], [data-key], img, video, a, source"))
+          Array.from(node.querySelectorAll("img, video, source"))
             .slice(0, 12)
             .forEach((child) => {
               if (!(child instanceof Element)) return;
-              pushValue(textOf(child));
-              pushValue(child.getAttribute("aria-label"));
-              pushValue(child.getAttribute("title"));
-              pushValue(child.getAttribute("alt"));
-              pushValue(child.getAttribute("data-testid"));
-              pushValue(child.getAttribute("data-id"));
-              pushValue(child.getAttribute("data-key"));
-              pushValue(child.getAttribute("href"));
               pushValue(child.getAttribute("src"));
-              pushValue(child.getAttribute("poster"));
-              if ("currentSrc" in child) {
-                pushValue(child.currentSrc);
-              }
             });
 
-          pushValue((node.outerHTML || "").slice(0, 4000));
           return values;
         };
 
-        const findReferencePickerItemByHints = (pickerItems) => {
+        const findReferencePickerItemByMediaId = (pickerItems) => {
           const referenceMediaId = normalizeUiToken(getReferenceMediaId());
-          const referenceTexts = getReferenceTexts()
-            .map((item) => normalizeUiToken(item))
-            .filter((item) => item.length >= 3);
-          if (!referenceMediaId && !referenceTexts.length) {
+          if (!referenceMediaId) {
             return null;
           }
 
           const scored = pickerItems
             .map((node, index) => {
-              const strings = collectReferenceMatchStrings(node);
+              const strings = collectReferenceMediaIdStrings(node);
               const mediaIdMatched = !!referenceMediaId && strings.some((value) => value.includes(referenceMediaId));
-              const textMatches = referenceTexts.filter((text) => strings.some((value) => value.includes(text))).length;
               return {
                 index,
                 node,
                 strings: strings.slice(0, 8),
                 media_id_matched: mediaIdMatched,
-                text_match_count: textMatches,
-                score: (mediaIdMatched ? 100 : 0) + textMatches,
+                score: mediaIdMatched ? 100 : 0,
               };
             })
             .filter((item) => item.score > 0)
@@ -470,26 +429,29 @@
         };
 
         const ensureReferenceSelected = async (dialog) => {
-          const selectedMaterialIndex = getSelectedMaterialIndex();
           const pickerItems = collectMediaPickerItems(dialog);
-          const hintMatched = findReferencePickerItemByHints(pickerItems);
-          const targetIndex = hintMatched
-            ? hintMatched.index
-            : (Number.isInteger(selectedMaterialIndex) && selectedMaterialIndex >= 0 ? selectedMaterialIndex : null);
-          if (!Number.isInteger(targetIndex) || targetIndex < 0) {
-            return { ok: false, reason: "missing_reference_match" };
-          }
-          if (targetIndex >= pickerItems.length) {
+          const referenceMediaId = getReferenceMediaId();
+          if (!referenceMediaId) {
             return {
               ok: false,
-              reason: "selected_material_index_out_of_range",
-              selected_material_index: selectedMaterialIndex,
-              resolved_target_index: targetIndex,
+              reason: "missing_reference_media_id",
               picker_count: pickerItems.length,
-              picker_samples: pickerItems.slice(0, 8).map((node) => summarizeElement(node)),
             };
           }
-          const targetItem = pickerItems[targetIndex];
+          const matchedItem = findReferencePickerItemByMediaId(pickerItems);
+          if (!matchedItem) {
+            return {
+              ok: false,
+              reason: "reference_media_id_not_found",
+              reference_media_id: referenceMediaId,
+              picker_count: pickerItems.length,
+              picker_samples: pickerItems.slice(0, 8).map((node) => ({
+                tile: summarizeElement(node),
+                src_strings: collectReferenceMediaIdStrings(node).slice(0, 6),
+              })),
+            };
+          }
+          const targetItem = matchedItem.node;
           clickNode(targetItem);
           const selected = await waitFor(
             () => {
@@ -507,10 +469,9 @@
             ok: !!selected,
             action: "clicked_reference_tile",
             tile: summarizeElement(targetItem),
-            match_strategy: hintMatched ? "reference_media_hints" : "selected_material_index",
-            selected_material_index: selectedMaterialIndex,
-            resolved_target_index: targetIndex,
-            reference_media_id: getReferenceMediaId(),
+            match_strategy: "reference_media_id",
+            resolved_target_index: matchedItem.index,
+            reference_media_id: referenceMediaId,
             picker_count: pickerItems.length,
           };
         };
