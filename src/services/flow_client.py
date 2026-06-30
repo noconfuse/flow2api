@@ -1648,12 +1648,21 @@ class FlowClient:
             headers.setdefault(key, value)
 
         url = self._build_media_redirect_url(clean_media_name)
+        proxy_url = None
+        if self.proxy_manager:
+            if hasattr(self.proxy_manager, "get_media_proxy_url"):
+                proxy_url = await self.proxy_manager.get_media_proxy_url()
+            elif hasattr(self.proxy_manager, "get_request_proxy_url"):
+                proxy_url = await self.proxy_manager.get_request_proxy_url()
+            else:
+                proxy_url = await self.proxy_manager.get_proxy_url()
 
         try:
             async with AsyncSession(trust_env=False) as session:
                 response = await session.get(
                     url,
                     headers=headers,
+                    proxy=proxy_url,
                     timeout=self._get_control_plane_timeout(),
                     impersonate="chrome124",
                     allow_redirects=False,
@@ -1673,6 +1682,7 @@ class FlowClient:
             try:
                 async with httpx.AsyncClient(
                     follow_redirects=False,
+                    proxy=proxy_url,
                     trust_env=False,
                     timeout=self._get_control_plane_timeout(),
                     verify=False,
