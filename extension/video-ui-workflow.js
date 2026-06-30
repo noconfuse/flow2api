@@ -1509,8 +1509,6 @@
               const looksLikeVideoToggle =
                 text === "视频" ||
                 text.includes("视频 ·") ||
-                text.includes("观看视频") ||
-                text.startsWith("videocam") ||
                 text.includes("play_circle 视频") ||
                 compact.includes("play_circle视频");
               const looksLikeImageToggle =
@@ -1521,6 +1519,7 @@
               const looksLikeTarget = normalizedMode === "video" ? looksLikeVideoToggle : looksLikeImageToggle;
               if (!looksLikeTarget) return null;
               if (inNav) return null;
+              if (compact.includes("观看视频") || compact.includes("videocam观看视频")) return null;
               if (compact.includes("查看设置")) return null;
               if (rawAria.includes("settings")) return null;
               const distanceScore = promptRect
