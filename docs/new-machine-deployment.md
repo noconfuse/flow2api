@@ -1,62 +1,19 @@
-# 新电脑部署指南
+# 新机器部署指南
 
-这份文档面向“把当前这套 `gflow-proxy-server` 部署到一台新电脑，并尽量复用旧机器上的现有配置和运行方式”的场景。
+这份文档面向“在一台全新的电脑上，从零部署当前这套 `gflow-proxy-server`”的场景。
 
-当前项目最常见、也最贴近现状的部署方式是：
+它不是迁移指南，不默认假设你会从旧机器复制数据库、浏览器状态或其他运行产物。
+
+当前项目最贴近现状的部署方式是：
 
 - 后端运行在 Docker 容器中
 - 验证码/高风控链路使用 `extension` 或 `personal`
 - 需要时由宿主机 Chrome 配合扩展完成 UI 自动化
 - 使用 `docker-compose.headed.yml`
 
-如果你当前机器就是这样跑的，建议新电脑也沿用这一套。
+如果你准备在新机器上恢复完整自动化能力，建议直接沿用这套方式。
 
-## 1. 先决定迁移方式
-
-### 1.1 只迁代码，不迁运行状态
-
-适合：
-
-- 你愿意在新电脑重新添加账号
-- 不需要保留旧机器上的 token 库、后台配置和浏览器状态
-
-需要准备：
-
-- 仓库代码
-- 一份新的 `config/setting.toml`
-
-### 1.2 连同当前状态一起迁移
-
-适合：
-
-- 你希望保留旧机器上的账号池、后台配置、数据库状态
-- 你已经在旧机器上维护好了 token、项目、调度参数
-
-建议至少迁移：
-
-- `config/setting.toml`
-- `data/`
-
-按需迁移：
-
-- `browser_data/`
-- `tmp/`
-
-通常不建议迁移：
-
-- `.dbg/`
-- 各类临时日志
-- 本地调试产物
-
-原因：
-
-- `config/setting.toml` 保存 API Key、后台账号和系统配置
-- `data/` 下是 SQLite 数据库和后台持久化状态
-- `browser_data/` 是否要迁，取决于你是否依赖本机保留的浏览器 profile 相关产物
-- `tmp/` 更偏缓存，通常可不迁
-- `.dbg/` 是调试痕迹，不属于正式运行依赖
-
-## 2. 新电脑前置要求
+## 1. 新机器前置要求
 
 建议准备以下环境：
 
@@ -66,13 +23,12 @@
 - Python 3.11 或至少 Python 3.10+
 - Google Chrome
 
-当前仓库里“宿主机浏览器启动桥”是按 macOS 的 `launchd` 方案提供的，见：
+当前仓库里“宿主机浏览器启动桥”原生提供了 macOS 的 `launchd` 方案，同时也已经补了 Windows 一键注册常驻脚本，见：
 
 - [browser-profile-host-bridge-service.md](file:///Users/baolei/workspace/gflow-proxy-server/docs/browser-profile-host-bridge-service.md)
+- [install_host_bridge_windows.ps1](file:///Users/baolei/workspace/gflow-proxy-server/scripts/install_host_bridge_windows.ps1)
 
-如果你新电脑不是 macOS，这份指南里的 host bridge 安装步骤需要自行换成 systemd 或手工常驻方式。
-
-## 3. 获取代码
+## 2. 获取代码
 
 在新电脑选择一个工作目录，例如：
 
@@ -83,26 +39,15 @@ git clone <你的仓库地址> gflow-proxy-server
 cd gflow-proxy-server
 ```
 
-如果你不是通过 Git 拉代码，而是直接从旧电脑拷贝仓库目录，也可以，但建议仍然保留 Git 仓库，方便后续更新。
+## 3. 准备配置文件
 
-## 4. 迁移必要文件
-
-### 4.1 配置文件
-
-如果旧机器已经有可用配置，直接复制：
-
-```bash
-mkdir -p config
-cp /旧机器导出的路径/setting.toml config/setting.toml
-```
-
-如果没有现成配置，可以从模板开始：
+从模板开始：
 
 ```bash
 cp config/setting_example.toml config/setting.toml
 ```
 
-然后至少确认这些字段：
+至少确认这些字段：
 
 - `global.api_key`
 - `global.admin_username`
@@ -113,33 +58,41 @@ cp config/setting_example.toml config/setting.toml
 
 - [setting_example.toml](file:///Users/baolei/workspace/gflow-proxy-server/config/setting_example.toml)
 
-### 4.2 数据目录
+推荐重点先看这几项：
 
-如果你希望保留旧机器上的账号池和后台状态，复制：
+### 3.1 `global` 段
 
-```bash
-mkdir -p data
-cp -R /旧机器导出的路径/data/. ./data/
-```
+- `api_key`
+  - 给外部 API 调用和扩展 WebSocket 鉴权使用
+- `admin_username`
+  - 后台登录用户名
+- `admin_password`
+  - 后台登录密码
+
+### 3.2 `captcha` 段
+
+- `captcha_method = "extension"`
+  - 如果你要继续使用当前主线里的扩展协作 / UI 自动化，优先选这个
+- `captcha_method = "personal"`
+  - 如果你更偏向 personal 浏览器方案，再按需切换
+
+### 3.3 首次从零部署时的认识
+
+由于这次不是迁移，首次启动后：
+
+- `data/` 会由系统自动初始化
+- 后台里不会有旧 token
+- 浏览器 profile / worker 也需要重新准备
+
+这属于正常现象。
 
 当前数据库默认落在 `data/` 下，见：
 
 - [database.py](file:///Users/baolei/workspace/gflow-proxy-server/src/core/database.py#L36-L38)
 
-### 4.3 浏览器相关目录
+## 4. 推荐的启动方式
 
-如果你旧机器上长期使用浏览器 profile / host bridge，并且确认本地状态对你有价值，可以按需复制：
-
-```bash
-mkdir -p browser_data
-cp -R /旧机器导出的路径/browser_data/. ./browser_data/
-```
-
-不确定是否需要时，可以先不复制，后续重新准备 profile。
-
-## 5. 推荐的启动方式
-
-### 5.1 为什么推荐 `docker-compose.headed.yml`
+### 4.1 为什么推荐 `docker-compose.headed.yml`
 
 当前项目的“浏览器扩展协作 / UI 自动化 / 宿主机拉起 Chrome profile”这套方案，默认是围绕 `docker-compose.headed.yml` 组织的：
 
@@ -153,7 +106,7 @@ cp -R /旧机器导出的路径/browser_data/. ./browser_data/
 
 - [docker-compose.headed.yml](file:///Users/baolei/workspace/gflow-proxy-server/docker-compose.headed.yml)
 
-### 5.2 启动命令
+### 4.2 启动命令
 
 首次建议直接构建：
 
@@ -179,11 +132,11 @@ docker compose -f docker-compose.headed.yml logs -f
 curl http://127.0.0.1:8000/health
 ```
 
-## 6. 宿主机浏览器启动桥
+## 5. 宿主机浏览器启动桥
 
 如果你希望保留“后台点启动浏览器后，系统自动在宿主机拉起对应 Chrome Profile”的能力，就需要安装 host bridge。
 
-### 6.1 安装
+### 5.1 macOS 安装
 
 在仓库根目录执行：
 
@@ -192,7 +145,40 @@ chmod +x scripts/install_browser_profile_host_bridge_launchagent.sh
 ./scripts/install_browser_profile_host_bridge_launchagent.sh
 ```
 
-### 6.2 验证
+### 5.2 Windows 安装
+
+Windows 不要运行 `install_browser_profile_host_bridge_launchagent.sh`，那个脚本依赖 `launchctl`，只适用于 macOS。
+
+当前仓库已经提供一键注册 Windows 常驻任务的脚本：
+
+- [install_host_bridge_windows.ps1](file:///Users/baolei/workspace/gflow-proxy-server/scripts/install_host_bridge_windows.ps1)
+
+在 PowerShell 里进入仓库根目录后执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_host_bridge_windows.ps1
+```
+
+如果自动探测不到 Chrome，显式指定浏览器路径：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_host_bridge_windows.ps1 -ChromePath "C:\Program Files\Google\Chrome\Application\chrome.exe"
+```
+
+这个脚本会自动完成：
+
+- 探测本机 Chrome/Chromium
+- 生成 `scripts\start_host_bridge_windows.cmd`
+- 注册一个“登录后自动启动”的 Windows 任务计划
+- 立即启动 host bridge
+
+如果后续要删除这个常驻任务，可执行：
+
+```powershell
+Unregister-ScheduledTask -TaskName "Flow2API Host Bridge" -Confirm:$false
+```
+
+### 5.3 验证
 
 ```bash
 curl http://127.0.0.1:8765/health
@@ -213,10 +199,11 @@ curl http://127.0.0.1:8765/health
 完整说明见：
 
 - [browser-profile-host-bridge-service.md](file:///Users/baolei/workspace/gflow-proxy-server/docs/browser-profile-host-bridge-service.md)
+- [install_host_bridge_windows.ps1](file:///Users/baolei/workspace/gflow-proxy-server/scripts/install_host_bridge_windows.ps1)
 
 如果你不需要自动拉起浏览器，只接受手工打开 Chrome，那么这一步不是必需的。
 
-## 7. 浏览器扩展安装
+## 6. 浏览器扩展安装
 
 当前扩展目录在：
 
@@ -226,7 +213,7 @@ curl http://127.0.0.1:8765/health
 
 - [manifest.json](file:///Users/baolei/workspace/gflow-proxy-server/extension/manifest.json)
 
-### 7.1 加载方式
+### 6.1 加载方式
 
 建议在 Chrome 中：
 
@@ -235,7 +222,7 @@ curl http://127.0.0.1:8765/health
 3. 选择“加载已解压的扩展程序”
 4. 选择仓库里的 `extension/` 目录
 
-### 7.2 扩展需要配置什么
+### 6.2 扩展需要配置什么
 
 扩展选项页需要填写：
 
@@ -261,7 +248,7 @@ ws://127.0.0.1:8000/captcha_ws
 
 - `config/setting.toml` 的 `global.api_key`
 
-### 7.3 Route Key 怎么理解
+### 6.3 Route Key 怎么理解
 
 `Route Key` 用来把“某个浏览器实例”固定绑定到后台里的某个账号。
 
@@ -276,26 +263,61 @@ ws://127.0.0.1:8000/captcha_ws
 - 浏览器 A: `Route Key = token6-worker`
 - 后台 token 6: `extension_route_key = token6-worker`
 
-## 8. 首次登录后台
+## 7. 首次登录后台
 
 服务启动后访问：
 
 - `http://127.0.0.1:8000/manage`
 
-如果你沿用了旧机器的 `config/setting.toml`，就使用其中的：
+使用 `config/setting.toml` 中的：
 
 - `global.admin_username`
 - `global.admin_password`
 
-如果是首次新建配置，建议登录后马上确认：
-
+首次登录后建议马上确认：
 - API Key 是否正确
 - 打码方式是否符合你的部署方式
-- 调度策略是否符合旧机器设置
+- 打码方式是否符合你的部署方式
+- 调度策略是否符合你的预期
 
+## 8. 从零部署后要补哪些初始化动作
+
+由于这次不是迁移，服务启动后后台是“空白初始状态”，通常还需要补这些动作：
+
+### 8.1 添加或导入 token
+
+你可以在后台：
+
+- 手工添加账号
+- 或使用导入功能批量导入 token
+
+如果不先补 token，`/test` 和实际生成链路都无法工作。
+
+### 8.2 为需要走浏览器协作的账号准备运行环境
+
+通常包括：
+
+- 为账号准备 browser profile
+- 启动浏览器
+- 在浏览器里完成登录
+- 给对应浏览器实例配置扩展 `Route Key`
+- 在后台 token 上填同样的 `Route Key`
+
+### 8.3 视你的场景决定是否必须用扩展
+
+如果你当前主要依赖：
+
+- 视频 UI 自动化
+- 浏览器 worker
+- 高风控页面协作
+
+那扩展和浏览器链路就是必需的。
+
+如果你只是先把服务跑起来，不急着恢复这些功能，可以先只完成后端部署。
 ## 9. 如果你使用当前这套自动化链路，建议这样验收
-
+## 9. 如果你使用当前这套自动化链路，建议这样验收
 ### 9.1 服务侧
+
 
 先确认：
 
@@ -306,8 +328,8 @@ curl http://127.0.0.1:8000/health
 然后登录后台，确认：
 
 - 后台能正常打开
-- token 列表能显示
-- 已迁移的数据确实存在
+- token 列表接口正常
+- 至少能添加或导入一个账号
 
 ### 9.2 host bridge
 
@@ -346,49 +368,20 @@ tail -f tmp/host-bridge/stderr.log
 
 如果你要跑视频测试，建议沿用当前更省额度的模型，例如 `omni-flash-r2v_4s` 或你当前实际在用的 4s 系列。
 
-## 10. 从旧电脑迁移时的推荐顺序
+## 10. 常见问题
 
-建议按下面顺序做，最稳：
+### 10.1 服务能启动，但后台没有 token
 
-1. 新电脑安装 Docker、Python、Chrome
-2. 克隆仓库
-3. 复制 `config/setting.toml`
-4. 复制 `data/`
-5. 按需复制 `browser_data/`
-6. 安装 host bridge
-7. 启动 `docker-compose.headed.yml`
-8. 加载扩展并填写配置
-9. 登录后台做一次验证
+这是正常的。
 
-这样做的好处是：
+因为这次是新部署，不是迁移，系统不会自动带出旧账号池。
 
-- 先把配置和状态迁过来
-- 再恢复浏览器自动化链路
-- 出问题时更容易定位是“服务侧”还是“浏览器侧”
+你需要：
 
-## 11. 哪些东西通常不用迁
+- 在后台手工添加 token
+- 或通过导入功能批量导入
 
-一般不需要从旧机器复制这些内容：
-
-- `.dbg/`
-- 本地调试脚本
-- 临时测试文件
-- 宿主机日志输出
-- 容器构建缓存
-
-这些要么不是运行依赖，要么在新电脑上重新生成更干净。
-
-## 12. 常见问题
-
-### 12.1 服务能启动，但后台没有旧 token
-
-优先检查：
-
-- `data/` 是否复制成功
-- 是否真的挂载到了容器里
-- 容器是否读到了正确的 `setting.toml`
-
-### 12.2 扩展显示正常，但后台看不到 worker 在线
+### 10.2 扩展显示正常，但后台看不到 worker 在线
 
 优先检查：
 
@@ -397,45 +390,58 @@ tail -f tmp/host-bridge/stderr.log
 - `Route Key` 是否和后台 token 的 route key 对齐
 - 浏览器是否真打开在 `https://labs.google/*`
 
-### 12.3 后台点“启动浏览器”没反应
+### 10.3 后台点“启动浏览器”没反应
 
 优先检查：
 
 - host bridge 是否已安装并在线
 - `docker-compose.headed.yml` 里的 `FLOW2API_BROWSER_LAUNCH_HOST_URL` 是否正确
 - 宿主机是否能正常拉起 Chrome
+- Windows 下如果提示“未找到可用的 Chrome/Chromium”，请重新执行 `install_host_bridge_windows.ps1 -ChromePath "<chrome.exe 路径>"`
 
-### 12.4 只是想在新电脑快速起服务，不想接浏览器自动化
+### 10.4 只是想先把服务起起来，不接浏览器自动化
 
 可以：
 
-- 只复制代码和 `setting.toml`
+- 只准备代码和 `setting.toml`
 - 直接启动服务
 - 使用第三方打码或其他非浏览器链路
 
 但如果你现在的主流程依赖扩展 UI 自动化，这样做只能起到“服务起来”，不能恢复完整自动化能力。
 
-## 13. 相关文档
+## 11. 相关文档
 
 - [project-introduction.md](file:///Users/baolei/workspace/gflow-proxy-server/docs/project-introduction.md)
 - [browser-profile-host-bridge-service.md](file:///Users/baolei/workspace/gflow-proxy-server/docs/browser-profile-host-bridge-service.md)
 - [googleflow-account-pool.md](file:///Users/baolei/workspace/gflow-proxy-server/docs/googleflow-account-pool.md)
 
-## 14. 最短路径
+## 12. 最短路径
 
 如果你只想看最短可执行版本，可以直接按下面做：
 
-```bash
+```text
 cd ~/workspace
 git clone <你的仓库地址> gflow-proxy-server
 cd gflow-proxy-server
 
-cp /旧机器导出的 setting.toml ./config/setting.toml
-cp -R /旧机器导出的 data ./data
+cp config/setting_example.toml ./config/setting.toml
+# 然后手工编辑 config/setting.toml，至少填好 api_key、admin_username、admin_password
+```
 
+macOS:
+
+```bash
 ./scripts/install_browser_profile_host_bridge_launchagent.sh
 docker compose -f docker-compose.headed.yml up -d --build
+curl http://127.0.0.1:8765/health
+curl http://127.0.0.1:8000/health
+```
 
+Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_host_bridge_windows.ps1
+docker compose -f docker-compose.headed.yml up -d --build
 curl http://127.0.0.1:8765/health
 curl http://127.0.0.1:8000/health
 ```
@@ -445,4 +451,5 @@ curl http://127.0.0.1:8000/health
 1. 在 Chrome 加载 `extension/`
 2. 配置扩展的 `serverUrl/apiKey/routeKey`
 3. 登录 `http://127.0.0.1:8000/manage`
-4. 验证 token、worker、浏览器自动化链路
+4. 在后台添加或导入 token
+5. 验证 worker、浏览器自动化链路
