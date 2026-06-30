@@ -27,14 +27,14 @@ if (-not $ChromePath) {
 }
 
 if (-not $ChromePath -or -not (Test-Path $ChromePath)) {
-    throw "未找到 Chrome/Chromium，请安装 Chrome，或用 -ChromePath 显式指定 chrome.exe 路径。"
+    throw "Chrome/Chromium not found. Install Chrome or pass -ChromePath with the full chrome.exe path."
 }
 
 $CmdLines = @(
-    "@echo off",
-    "setlocal",
+    '@echo off',
+    'setlocal',
     "cd /d ""$RepoRoot""",
-    "if not exist ""tmp\host-bridge"" mkdir ""tmp\host-bridge""",
+    'if not exist "tmp\host-bridge" mkdir "tmp\host-bridge"',
     "set FLOW2API_BROWSER_LAUNCH_HOST_BIND=$BindHost",
     "set FLOW2API_BROWSER_LAUNCH_HOST_PORT=$Port",
     "set FLOW2API_CHROME_PATH=$ChromePath",
@@ -62,9 +62,9 @@ Register-ScheduledTask `
 
 Start-ScheduledTask -TaskName $TaskName
 
-Write-Host "已注册并启动任务: $TaskName"
-Write-Host "Chrome 路径: $ChromePath"
-Write-Host "启动脚本: $StartCmd"
-Write-Host "健康检查: http://127.0.0.1:$Port/health"
-Write-Host "stdout 日志: $(Join-Path $LogDir 'stdout.log')"
-Write-Host "stderr 日志: $(Join-Path $LogDir 'stderr.log')"
+Write-Host "Task registered and started: $TaskName"
+Write-Host "Chrome path: $ChromePath"
+Write-Host "Launcher script: $StartCmd"
+Write-Host "Health check: http://127.0.0.1:$Port/health"
+Write-Host "stdout log: $(Join-Path $LogDir 'stdout.log')"
+Write-Host "stderr log: $(Join-Path $LogDir 'stderr.log')"
