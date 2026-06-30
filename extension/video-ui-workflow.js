@@ -748,6 +748,22 @@
           selection.addRange(range);
         };
 
+        const getEditableRangeWithinTarget = (target) => {
+          if (!(target instanceof Element)) return null;
+          const selection = window.getSelection();
+          if (selection?.rangeCount) {
+            const candidate = selection.getRangeAt(0);
+            const container = candidate.commonAncestorContainer;
+            if (container && target.contains(container.nodeType === Node.TEXT_NODE ? container.parentNode : container)) {
+              return candidate.cloneRange();
+            }
+          }
+          const range = document.createRange();
+          range.selectNodeContents(target);
+          range.collapse(false);
+          return range;
+        };
+
         const summarizeSubmitButtonState = () => {
           const button = findSubmitButton();
           if (!(button instanceof Element)) {
@@ -2359,7 +2375,10 @@
               }
               if (!inserted) {
                 const selection = window.getSelection();
-                const range = selection?.rangeCount ? selection.getRangeAt(0) : document.createRange();
+                const range = getEditableRangeWithinTarget(target);
+                if (!range) {
+                  throw new Error("prompt_edit_range_not_available");
+                }
                 const textNode = document.createTextNode(valueToInsert);
                 range.deleteContents();
                 range.insertNode(textNode);
