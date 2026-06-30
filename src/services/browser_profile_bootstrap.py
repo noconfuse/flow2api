@@ -301,6 +301,46 @@ def build_extension_bundle(spec: TokenBrowserProfileSpec, runtime_settings: Opti
 
 def find_profile_process_pids(user_data_dir: Path) -> list[int]:
     target = str(user_data_dir)
+    target_variants = {
+        target,
+        target.replace("\\", "/"),
+        target.replace("/", "\\"),
+    }
+    if os.name == "nt":
+        try:
+            output = subprocess.check_output(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+                ],
+                text=True,
+            )
+            rows = json.loads(output or "[]")
+        except Exception:
+            return []
+        if isinstance(rows, dict):
+            rows = [rows]
+        pids: list[int] = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            command = str(row.get("CommandLine") or "")
+            lowered = command.lower()
+            if ".exe" not in lowered or ("chrome" not in lowered and "chromium" not in lowered):
+                continue
+            normalized_command = command.replace("\\", "/").lower()
+            if not any(str(item).replace("\\", "/").lower() in normalized_command for item in target_variants):
+                continue
+            try:
+                pid = int(row.get("ProcessId"))
+            except Exception:
+                continue
+            if pid == os.getpid():
+                continue
+            pids.append(pid)
+        return sorted(set(pids))
     try:
         output = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True)
     except Exception:
@@ -332,6 +372,46 @@ def stop_profile_processes(spec: TokenBrowserProfileSpec) -> list[int]:
     pids = find_profile_process_pids(spec.user_data_dir)
     if not pids:
         return []
+
+    if os.name == "nt":
+        alive = set(pids)
+        for pid in pids:
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+            except Exception:
+                continue
+
+        deadline = time.time() + 5
+        while alive and time.time() < deadline:
+            remaining: set[int] = set()
+            for pid in alive:
+                try:
+                    os.kill(pid, 0)
+                    remaining.add(pid)
+                except ProcessLookupError:
+                    continue
+                except Exception:
+                    remaining.add(pid)
+            alive = remaining
+            if alive:
+                time.sleep(0.2)
+
+        for pid in sorted(alive):
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+            except Exception:
+                continue
+        return pids
 
     for pid in pids:
         try:
