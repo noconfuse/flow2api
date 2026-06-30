@@ -800,7 +800,6 @@
             };
           }
           const genericFailure = findBlock((text) =>
-            text.startsWith("失败") ||
             text.includes("生成失败") ||
             text.includes("提交失败") ||
             text.includes("出错了") ||
@@ -821,6 +820,14 @@
             };
           }
           return null;
+        };
+
+        const getSubmitHookSnapshot = () => {
+          const hook = window.__FLOW2API_VIDEO_WORKFLOW_SUBMIT_HOOK__;
+          if (!hook?.snapshot) {
+            return { entries: [], errors: [] };
+          }
+          return hook.snapshot() || { entries: [], errors: [] };
         };
 
         const summarizeSlateState = (target) => {
@@ -2564,6 +2571,8 @@
           recordStep("prompt_typed", promptResult);
 
           installVideoEditSubmitHook();
+          const submitHookBefore = getSubmitHookSnapshot();
+          const submitEntriesBefore = Array.isArray(submitHookBefore?.entries) ? submitHookBefore.entries.length : 0;
           await humanPause(1000, 2200);
           const submitButton = await waitFor(() => findSubmitButton(), 6000, 120);
           if (!submitButton) {
@@ -2571,9 +2580,33 @@
           }
           clickNode(submitButton, { nativeOnly: true });
           recordStep("submit_clicked", { button: summarizeElement(submitButton) });
-          await sleep(1800);
-          const submitFailure = await waitFor(() => getSubmitFailureState(), 4500, 150);
-          if (submitFailure) {
+          await sleep(800);
+          const submitObserved = await waitFor(() => {
+            const snapshot = getSubmitHookSnapshot();
+            const entries = Array.isArray(snapshot?.entries) ? snapshot.entries : [];
+            if (entries.length <= submitEntriesBefore) return null;
+            return {
+              entry_count_before: submitEntriesBefore,
+              entry_count_after: entries.length,
+              latest_entry: entries[entries.length - 1] || null,
+              errors: Array.isArray(snapshot?.errors) ? snapshot.errors.slice(-4) : [],
+            };
+          }, 6000, 120);
+          recordStep("submit_request_observed", submitObserved || {
+            entry_count_before: submitEntriesBefore,
+            entry_count_after: getSubmitHookSnapshot()?.entries?.length || submitEntriesBefore,
+          });
+          if (!submitObserved) {
+            const submitFailure = await waitFor(() => getSubmitFailureState(), 4500, 150);
+            if (submitFailure) {
+              recordStep("submit_failed", submitFailure);
+              throw new Error(`submit_failed:${submitFailure.kind}:${submitFailure.message}`);
+            }
+            throw new Error("submit_request_not_observed");
+          }
+
+          const submitFailure = getSubmitFailureState();
+          if (submitFailure?.kind === "abnormal_activity") {
             recordStep("submit_failed", submitFailure);
             throw new Error(`submit_failed:${submitFailure.kind}:${submitFailure.message}`);
           }
