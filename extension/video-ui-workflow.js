@@ -789,6 +789,56 @@
           }, timeoutMs, 120);
         };
 
+        const closeVideoSettingsOverlays = async () => {
+          const confirmClosed = async () =>
+            await waitFor(() => {
+              const overlayRoots = collectSettingsOverlayRoots();
+              return overlayRoots.length ? null : { ok: true };
+            }, 1600, 100);
+          const attemptResults = [];
+          const overlayRootsBefore = collectSettingsOverlayRoots().map((node) => summarizeElement(node));
+          if (!overlayRootsBefore.length) {
+            return { ok: true, skipped: "already_closed", attempt_results: [], overlay_count_before: 0, overlay_count_after: 0 };
+          }
+
+          document.body?.focus?.();
+          dispatchKeyboard(document.body || document.documentElement, "Escape");
+          let confirmed = await confirmClosed();
+          attemptResults.push({ attempt: "escape_key", confirmed: !!confirmed });
+
+          if (!confirmed) {
+            const chip = collectVideoSettingsChipCandidates()[0]?.node || null;
+            if (chip instanceof Element) {
+              const rect = chip.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0) {
+                clickAtPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+              } else {
+                clickNode(chip, { nativeOnly: true });
+              }
+              await sleep(220);
+              confirmed = await confirmClosed();
+              attemptResults.push({ attempt: "chip_toggle", confirmed: !!confirmed, chip: summarizeElement(chip) });
+            }
+          }
+
+          if (!confirmed) {
+            clickAtPoint(Math.max(8, Math.round(window.innerWidth * 0.08)), Math.max(8, Math.round(window.innerHeight * 0.12)));
+            await sleep(220);
+            confirmed = await confirmClosed();
+            attemptResults.push({ attempt: "outside_click", confirmed: !!confirmed });
+          }
+
+          return {
+            ok: !!confirmed,
+            reason: confirmed ? "" : "settings_overlay_close_not_confirmed",
+            attempt_results: attemptResults,
+            overlay_count_before: overlayRootsBefore.length,
+            overlay_count_after: collectSettingsOverlayRoots().length,
+            overlay_snapshot_before: overlayRootsBefore.slice(0, 4),
+            overlay_snapshot_after: collectSettingsOverlayRoots().slice(0, 4).map((node) => summarizeElement(node)),
+          };
+        };
+
         const summarizeSubmitButtonState = () => {
           const button = findSubmitButton();
           if (!(button instanceof Element)) {
@@ -2586,6 +2636,11 @@
                 desiredSettingsResult.reason || "unknown"
               }; detail=${JSON.stringify(desiredSettingsResult)}`
             );
+          }
+          const settingsOverlayClosed = await closeVideoSettingsOverlays();
+          recordStep("settings_overlay_closed", settingsOverlayClosed);
+          if (!settingsOverlayClosed.ok) {
+            throw new Error(`settings_overlay_close_failed:${settingsOverlayClosed.reason || "unknown"}`);
           }
           const promptReadyAfterSettings = await waitForPromptEditorReadyAfterSettings();
           recordStep("prompt_ready_after_settings", promptReadyAfterSettings || { ok: false, reason: "prompt_not_ready_after_settings" });
