@@ -1147,6 +1147,63 @@ class GenerationHandler:
             "aspect_ratio": aspect_ratio,
         }
 
+    async def _recover_video_delivery_info_from_project_snapshot(
+        self,
+        *,
+        token: Any,
+        project_id: str,
+        operation: Dict[str, Any],
+    ) -> Dict[str, str]:
+        st_token = str(getattr(token, "st", "") or "").strip()
+        normalized_project_id = str(project_id or "").strip()
+        if not st_token or not normalized_project_id:
+            return {"video_url": "", "video_media_id": "", "aspect_ratio": ""}
+
+        snapshot = await self.flow_client.get_flow_project_initial_data(st_token, normalized_project_id)
+        collect_ops = getattr(self.flow_client, "_collect_video_operations_from_project_snapshot", None)
+        if not callable(collect_ops):
+            return {"video_url": "", "video_media_id": "", "aspect_ratio": ""}
+
+        current_operations = collect_ops(snapshot, fallback_project_id=normalized_project_id) or []
+        target_workflow_id = str(operation.get("workflowId") or "").strip()
+        operation_body = operation.get("operation") if isinstance(operation.get("operation"), dict) else {}
+        target_operation_name = str(operation_body.get("name") or "").strip()
+        target_media_name = str(operation.get("mediaName") or "").strip()
+
+        def _candidate_score(item: Dict[str, Any]) -> int:
+            if not isinstance(item, dict):
+                return -1
+            if str(item.get("status") or "").strip() != "MEDIA_GENERATION_STATUS_SUCCESSFUL":
+                return -1
+            score = 0
+            if target_workflow_id and str(item.get("workflowId") or "").strip() == target_workflow_id:
+                score += 100
+            item_body = item.get("operation") if isinstance(item.get("operation"), dict) else {}
+            if target_operation_name and str(item_body.get("name") or "").strip() == target_operation_name:
+                score += 60
+            if target_media_name and str(item.get("mediaName") or "").strip() == target_media_name:
+                score += 40
+            delivery = self._extract_video_delivery_info(item)
+            if delivery.get("video_url"):
+                score += 15
+            if delivery.get("video_media_id"):
+                score += 5
+            return score
+
+        scored_candidates = []
+        for item in current_operations:
+            score = _candidate_score(item)
+            if score >= 0:
+                scored_candidates.append((score, item))
+        if not scored_candidates:
+            return {"video_url": "", "video_media_id": "", "aspect_ratio": ""}
+
+        scored_candidates.sort(key=lambda entry: entry[0], reverse=True)
+        best_score, best_operation = scored_candidates[0]
+        if best_score <= 0:
+            return {"video_url": "", "video_media_id": "", "aspect_ratio": ""}
+        return self._extract_video_delivery_info(best_operation)
+
     def _mark_generation_failed(self, generation_result: Optional[Dict[str, Any]], error_message: str):
         """????????????????????"""
         if isinstance(generation_result, dict):
@@ -2564,6 +2621,38 @@ class GenerationHandler:
                         except Exception as e:
                             debug_logger.log_warning(
                                 f"[VIDEO POLL] resolve_media_redirect_url failed: {e}"
+                            )
+
+                    if not video_url:
+                        try:
+                            recovered_delivery = await self._recover_video_delivery_info_from_project_snapshot(
+                                token=token,
+                                project_id=project_id,
+                                operation=operation,
+                            )
+                            if recovered_delivery.get("video_url"):
+                                video_url = recovered_delivery["video_url"]
+                            if recovered_delivery.get("video_media_id"):
+                                video_media_id = recovered_delivery["video_media_id"]
+                            if recovered_delivery.get("aspect_ratio"):
+                                aspect_ratio = recovered_delivery["aspect_ratio"]
+                        except Exception as e:
+                            debug_logger.log_warning(
+                                f"[VIDEO POLL] project snapshot delivery recovery failed: {e}"
+                            )
+
+                    if not video_url and video_media_id:
+                        try:
+                            resolved_video_url = await self.flow_client.resolve_media_redirect_url(
+                                st=token.st,
+                                media_name=video_media_id,
+                                project_id=project_id,
+                            )
+                            if resolved_video_url:
+                                video_url = resolved_video_url
+                        except Exception as e:
+                            debug_logger.log_warning(
+                                f"[VIDEO POLL] resolve_media_redirect_url after snapshot recovery failed: {e}"
                             )
 
                     if not video_url:
