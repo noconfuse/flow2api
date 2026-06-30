@@ -1338,6 +1338,61 @@
           return null;
         };
 
+        const collectOpenModeOverlayRoots = () =>
+          Array.from(document.querySelectorAll("[role='menu'], [data-radix-menu-content], [data-state='open']"))
+            .filter((node) => visible(node));
+
+        const waitForGenerationModeMenuReady = async (targetMode, timeoutMs = 900, intervalMs = 90) => {
+          const normalizedMode = String(targetMode || "video").trim().toLowerCase();
+          return await waitFor(() => {
+            const candidate = collectGenerationModeTabCandidates(normalizedMode)[0]?.node || null;
+            const overlayRoots = collectOpenModeOverlayRoots();
+            if (candidate || overlayRoots.length > 0) {
+              return {
+                candidate,
+                overlay_roots: overlayRoots.map((node) => summarizeElement(node)),
+              };
+            }
+            return null;
+          }, timeoutMs, intervalMs);
+        };
+
+        const openGenerationModeMenu = async (trigger, targetMode) => {
+          if (!(trigger instanceof Element)) {
+            return { opened: false, attempts: [] };
+          }
+          const attempts = [];
+
+          clickNode(trigger);
+          const firstReady = await waitForGenerationModeMenuReady(targetMode, 700, 80);
+          attempts.push({
+            attempt: "clickNode",
+            trigger_state: String(trigger.getAttribute("data-state") || ""),
+            menu_ready: !!firstReady,
+            overlay_count: Array.isArray(firstReady?.overlay_roots) ? firstReady.overlay_roots.length : 0,
+          });
+          if (firstReady) {
+            return { opened: true, attempts, ...firstReady };
+          }
+
+          const rect = trigger.getBoundingClientRect();
+          const fallbackClick = clickAtPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+          await sleep(220);
+          const secondReady = await waitForGenerationModeMenuReady(targetMode, 900, 80);
+          attempts.push({
+            attempt: "clickAtPoint",
+            trigger_state: String(trigger.getAttribute("data-state") || ""),
+            menu_ready: !!secondReady,
+            overlay_count: Array.isArray(secondReady?.overlay_roots) ? secondReady.overlay_roots.length : 0,
+            click: fallbackClick,
+          });
+          if (secondReady) {
+            return { opened: true, attempts, click: fallbackClick, ...secondReady };
+          }
+
+          return { opened: false, attempts, click: fallbackClick };
+        };
+
         const collectGenerationModeTabCandidates = (targetMode) => {
           const normalizedMode = String(targetMode || "video").trim().toLowerCase();
           const selectors = ["[role='tab']", "button", "[role='button']", "[role='menuitem']"].join(", ");
@@ -1408,22 +1463,22 @@
             if (!(trigger instanceof Element)) {
               return { ok: false, acted: false, reason: "mode_menu_trigger_not_found", target_mode: normalizedMode, prompt_state_before: before };
             }
-            clickNode(trigger);
-            await sleep(300);
-            const openedCandidate = collectGenerationModeTabCandidates(normalizedMode)[0]?.node || null;
+            const menuOpenResult = await openGenerationModeMenu(trigger, normalizedMode);
+            const openedCandidate = menuOpenResult?.candidate || collectGenerationModeTabCandidates(normalizedMode)[0]?.node || null;
             if (openedCandidate) {
               clickNode(openedCandidate);
             } else {
-            const aliasClick = clickOverlayAlias(normalizedMode === "video" ? ["视频", "play_circle视频"] : ["图片", "image图片"]);
-            if (!aliasClick?.click?.clicked) {
-              return {
-                ok: false,
-                acted: true,
-                reason: "target_mode_option_not_found",
-                target_mode: normalizedMode,
-                trigger: summarizeElement(trigger),
-              };
-            }
+              const aliasClick = clickOverlayAlias(normalizedMode === "video" ? ["视频", "play_circle视频"] : ["图片", "image图片"]);
+              if (!aliasClick?.click?.clicked) {
+                return {
+                  ok: false,
+                  acted: true,
+                  reason: menuOpenResult?.opened ? "target_mode_option_not_found" : "mode_menu_open_failed",
+                  target_mode: normalizedMode,
+                  trigger: summarizeElement(trigger),
+                  menu_open_result: menuOpenResult,
+                };
+              }
             }
           }
           const after = await waitFor(() => {

@@ -515,12 +515,20 @@ class Config:
     def captcha_method(self) -> str:
         """Get captcha method"""
         method = self._config.get("captcha", {}).get("captcha_method", "yescaptcha")
-        return "personal" if method == "remote_browser" else method
+        if method == "remote_browser":
+            return "personal"
+        if method == "extensions":
+            return "extension"
+        return method
 
     def set_captcha_method(self, method: str):
         """Set captcha method"""
         if "captcha" not in self._config:
             self._config["captcha"] = {}
+        if method == "remote_browser":
+            method = "personal"
+        elif method == "extensions":
+            method = "extension"
         self._config["captcha"]["captcha_method"] = method
 
     @property
