@@ -30,18 +30,18 @@ if (-not $ChromePath -or -not (Test-Path $ChromePath)) {
     throw "未找到 Chrome/Chromium，请安装 Chrome，或用 -ChromePath 显式指定 chrome.exe 路径。"
 }
 
-$CmdContent = @"
-@echo off
-setlocal
-cd /d "$RepoRoot"
-if not exist "tmp\host-bridge" mkdir "tmp\host-bridge"
-set FLOW2API_BROWSER_LAUNCH_HOST_BIND=$BindHost
-set FLOW2API_BROWSER_LAUNCH_HOST_PORT=$Port
-set FLOW2API_CHROME_PATH=$ChromePath
-$PythonCmd scripts\browser_profile_host_bridge.py >> tmp\host-bridge\stdout.log 2>> tmp\host-bridge\stderr.log
-"@
+$CmdLines = @(
+    "@echo off",
+    "setlocal",
+    "cd /d ""$RepoRoot""",
+    "if not exist ""tmp\host-bridge"" mkdir ""tmp\host-bridge""",
+    "set FLOW2API_BROWSER_LAUNCH_HOST_BIND=$BindHost",
+    "set FLOW2API_BROWSER_LAUNCH_HOST_PORT=$Port",
+    "set FLOW2API_CHROME_PATH=$ChromePath",
+    "$PythonCmd scripts\browser_profile_host_bridge.py >> tmp\host-bridge\stdout.log 2>> tmp\host-bridge\stderr.log"
+)
 
-Set-Content -Path $StartCmd -Value $CmdContent -Encoding ASCII
+Set-Content -Path $StartCmd -Value ($CmdLines -join "`r`n") -Encoding ASCII
 
 $Action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$StartCmd`""
 $Trigger = New-ScheduledTaskTrigger -AtLogOn
