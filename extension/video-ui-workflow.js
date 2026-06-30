@@ -2546,13 +2546,6 @@
             await humanPause(420, 900);
           }
 
-          const promptResult = await typePrompt(String(jobPayload.prompt || ""));
-          if (!promptResult.ok) {
-            throw new Error(`prompt typing failed: ${promptResult.reason || "unknown"}`);
-          }
-          recordStep("prompt_typed", promptResult);
-          await humanPause(260, 520);
-
           const desiredSettingsResult = await applyDesiredVideoSettings();
           recordStep("desired_video_settings", desiredSettingsResult);
           if (!desiredSettingsResult.ok) {
@@ -2562,6 +2555,13 @@
               }; detail=${JSON.stringify(desiredSettingsResult)}`
             );
           }
+          await humanPause(260, 520);
+
+          const promptResult = await typePrompt(String(jobPayload.prompt || ""));
+          if (!promptResult.ok) {
+            throw new Error(`prompt typing failed: ${promptResult.reason || "unknown"}`);
+          }
+          recordStep("prompt_typed", promptResult);
 
           installVideoEditSubmitHook();
           await humanPause(1000, 2200);
