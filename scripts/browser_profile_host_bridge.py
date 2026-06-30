@@ -107,6 +107,7 @@ class HostBridgeHandler(BaseHTTPRequestHandler):
             sys.executable,
             str(LAUNCHER_SCRIPT),
             "launch-explicit",
+            "--json",
             "--token-id",
             str(token_id),
             "--user-data-dir",
@@ -149,14 +150,29 @@ class HostBridgeHandler(BaseHTTPRequestHandler):
             )
             return
 
+        launch_payload = {}
+        if stdout:
+            try:
+                launch_payload = json.loads(stdout)
+            except Exception:
+                launch_payload = {}
+
         self._send_json(
             200,
             {
                 "success": True,
                 "token_id": token_id,
-                "chrome_path": chrome_path or None,
-                "command": command,
-                "pid": None,
+                "chrome_path": launch_payload.get("chrome_path") or chrome_path or None,
+                "command": launch_payload.get("command") or command,
+                "pid": launch_payload.get("pid"),
+                "launcher_command": command,
+                "launcher_token_id": launch_payload.get("token_id"),
+                "browser_user_data_dir": launch_payload.get("user_data_dir"),
+                "browser_extension_dir": launch_payload.get("extension_dir"),
+                "browser_startup_url": launch_payload.get("startup_url"),
+                "stopped_pids": launch_payload.get("stopped_pids") or [],
+                "cleared_session_files": launch_payload.get("cleared_session_files") or [],
+                "cleared_extension_state": launch_payload.get("cleared_extension_state") or [],
                 "stdout": stdout,
                 "stderr": stderr,
             },

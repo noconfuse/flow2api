@@ -480,7 +480,7 @@ def launch_profile_with_paths(
     startup_url: str,
     chrome_path: str,
     extra_args: list[str] | None = None,
-) -> list[str]:
+) -> dict[str, object]:
     ensure_state_dirs()
     user_data_dir.mkdir(parents=True, exist_ok=True)
     if not extension_dir.exists():
@@ -516,7 +516,7 @@ def launch_profile_with_paths(
     launch_args = [*default_launch_args(), *(extra_args or [])]
     if launch_args:
         command[1:1] = launch_args
-    subprocess.Popen(
+    process = subprocess.Popen(
         command,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -537,10 +537,21 @@ def launch_profile_with_paths(
         },
     )
     # #endregion
-    return command
+    return {
+        "pid": process.pid,
+        "token_id": token_id,
+        "user_data_dir": str(user_data_dir),
+        "extension_dir": str(extension_dir),
+        "startup_url": startup_url,
+        "chrome_path": chrome_path,
+        "command": command,
+        "stopped_pids": stopped_pids,
+        "cleared_session_files": cleared_session_files,
+        "cleared_extension_state": cleared_extension_state,
+    }
 
 
-def launch_profile(token: TokenRecord, chrome_path: str, extra_args: list[str] | None = None) -> list[str]:
+def launch_profile(token: TokenRecord, chrome_path: str, extra_args: list[str] | None = None) -> dict[str, object]:
     return launch_profile_with_paths(
         token_id=token.id,
         user_data_dir=token.user_data_dir,
@@ -613,12 +624,16 @@ def command_launch(args: argparse.Namespace) -> int:
     extra_args = args.chrome_arg or []
     for token in tokens:
         build_extension_bundle(token, runtime_settings)
-        command = launch_profile(token, chrome_path, extra_args=extra_args)
+        launch_result = launch_profile(token, chrome_path, extra_args=extra_args)
+        if args.json:
+            print(json.dumps(launch_result, ensure_ascii=False))
+            continue
         print(
             f"[launched] token={token.id} email={token.email or '-'} "
             f"route_key={token.effective_route_key}"
         )
-        print("  command:", " ".join(command))
+        print("  chrome_path:", launch_result["chrome_path"])
+        print("  command:", " ".join(launch_result["command"]))
         print("  note: 首次启动这个 profile 时，只需要在打开的 Chrome 窗口里登录一次对应 Google 账号。")
     return 0
 
@@ -631,7 +646,7 @@ def command_launch_explicit(args: argparse.Namespace) -> int:
     startup_url = str(args.startup_url or "").strip()
     if not startup_url:
         raise RuntimeError("startup_url 不能为空")
-    command = launch_profile_with_paths(
+    launch_result = launch_profile_with_paths(
         token_id=int(args.token_id) if args.token_id is not None else None,
         user_data_dir=user_data_dir,
         extension_dir=extension_dir,
@@ -639,11 +654,15 @@ def command_launch_explicit(args: argparse.Namespace) -> int:
         chrome_path=chrome_path,
         extra_args=extra_args,
     )
+    if args.json:
+        print(json.dumps(launch_result, ensure_ascii=False))
+        return 0
     print(
         f"[launched-explicit] token={args.token_id if args.token_id is not None else '-'} "
         f"user_data_dir={user_data_dir}"
     )
-    print("  command:", " ".join(command))
+    print("  chrome_path:", launch_result["chrome_path"])
+    print("  command:", " ".join(launch_result["command"]))
     return 0
 
 
@@ -672,6 +691,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="额外传给 Chrome 的参数，可重复传入多次",
     )
+    launch_parser.add_argument("--json", action="store_true", help="以 JSON 输出实际启动结果")
     launch_parser.set_defaults(func=command_launch)
 
     explicit_launch_parser = subparsers.add_parser(
@@ -689,6 +709,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="额外传给 Chrome 的参数，可重复传入多次",
     )
+    explicit_launch_parser.add_argument("--json", action="store_true", help="以 JSON 输出实际启动结果")
     explicit_launch_parser.set_defaults(func=command_launch_explicit)
 
     return parser
