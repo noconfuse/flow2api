@@ -5,6 +5,8 @@ const DEFAULT_SETTINGS = {
   clientLabel: ""
 };
 
+let bootstrapSettingsPromise = null;
+
 const $ = (id) => document.getElementById(id);
 
 function normalizeSettings(values) {
@@ -14,6 +16,21 @@ function normalizeSettings(values) {
     routeKey: (values.routeKey || "").trim(),
     clientLabel: (values.clientLabel || "").trim()
   };
+}
+
+async function getBootstrapSettings() {
+  if (!bootstrapSettingsPromise) {
+    bootstrapSettingsPromise = fetch(chrome.runtime.getURL("bootstrap-settings.json"), {
+      cache: "no-store"
+    })
+      .then((response) => {
+        if (!response.ok) return {};
+        return response.json();
+      })
+      .then((payload) => normalizeSettings(payload || {}))
+      .catch(() => normalizeSettings({}));
+  }
+  return bootstrapSettingsPromise;
 }
 
 function setStatus(message, isError = false) {
@@ -31,9 +48,10 @@ function isValidWsUrl(value) {
   }
 }
 
-function loadSettings() {
+async function loadSettings() {
+  const bootstrap = await getBootstrapSettings();
   chrome.storage.local.get(DEFAULT_SETTINGS, (stored) => {
-    const settings = normalizeSettings(stored);
+    const settings = normalizeSettings({ ...stored, ...bootstrap });
     $("serverUrl").value = settings.serverUrl;
     $("apiKey").value = settings.apiKey;
     $("routeKey").value = settings.routeKey;

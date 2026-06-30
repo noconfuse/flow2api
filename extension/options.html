@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Flow2API Captcha Worker Settings</title>
+  <title>Flow2API Browser Worker Settings</title>
   <style>
     body {
       margin: 0;
@@ -75,8 +75,8 @@
 <body>
   <div class="wrap">
     <div class="panel">
-      <h1>Flow2API Captcha Worker</h1>
-      <p>给当前浏览器实例设置一个独立的路由键，Flow2API 后端就能把对应账号的验证码请求固定发到这个实例。</p>
+      <h1>Flow2API Browser Worker</h1>
+      <p>给当前浏览器实例设置一个独立的路由键，Flow2API 后端就能把对应账号的验证码请求和浏览器身份摘要固定绑定到这个实例。</p>
 
       <label for="routeKey">Route Key</label>
       <input id="routeKey" type="text" placeholder="例如 9223">
@@ -92,7 +92,7 @@
 
       <button id="saveBtn" type="button">保存</button>
       <div class="status" id="status"></div>
-      <div class="hint">管理台 token 里填写同样的 <code>Route Key</code>，比如 9223 对 9223。后端会使用 API Key 校验 WebSocket 连接。</div>
+      <div class="hint">管理台 token 里填写同样的 <code>Route Key</code>，比如 9223 对 9223。插件会持续上报当前 Labs 页面、账号邮箱和项目摘要，后端会使用 API Key 校验 WebSocket 连接。</div>
     </div>
   </div>
   <script src="options.js"></script>

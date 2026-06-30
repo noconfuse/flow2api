@@ -1,6 +1,7 @@
 """Proxy management module"""
-from typing import Optional
+from typing import Optional, Dict, Any
 import re
+from urllib.parse import urlparse
 from ..core.database import Database
 from ..core.models import ProxyConfig
 
@@ -108,6 +109,33 @@ class ProxyManager:
                 "host:port:user:pass / st5 host:port:user:pass"
             )
         return parsed
+
+    def build_captcha_task_proxy_fields(self, proxy_url: Optional[str]) -> Optional[Dict[str, Any]]:
+        """将代理地址转换为三方打码 createTask.task 所需字段。"""
+        normalized = self.normalize_proxy_url(proxy_url)
+        if not normalized:
+            return None
+
+        parsed = urlparse(normalized)
+        hostname = parsed.hostname
+        port = parsed.port
+        scheme = (parsed.scheme or "").lower()
+        if scheme == "socks5h":
+            scheme = "socks5"
+
+        if not hostname or not port or scheme not in {"http", "https", "socks5"}:
+            raise ValueError("代理地址格式错误，无法转换为打码任务代理参数")
+
+        task_proxy: Dict[str, Any] = {
+            "proxyType": scheme,
+            "proxyAddress": hostname,
+            "proxyPort": int(port),
+        }
+        if parsed.username:
+            task_proxy["proxyLogin"] = parsed.username
+        if parsed.password:
+            task_proxy["proxyPassword"] = parsed.password
+        return task_proxy
 
     async def get_proxy_url(self) -> Optional[str]:
         """兼容旧调用：返回请求代理地址"""

@@ -15,7 +15,7 @@ from .services.token_manager import TokenManager
 from .services.load_balancer import LoadBalancer
 from .services.concurrency_manager import ConcurrencyManager
 from .services.generation_handler import GenerationHandler
-from .api import routes, admin
+from .api import routes, admin, capture_debug
 
 
 @asynccontextmanager
@@ -111,25 +111,44 @@ async def lifespan(app: FastAPI):
     # Initialize concurrency manager
     await concurrency_manager.initialize(tokens)
 
-    if config.captcha_method == "remote_browser":
-        try:
-            warmed_projects = await flow_client.prefill_remote_browser_for_tokens(tokens, action="IMAGE_GENERATION")
-            print(f"✓ Remote browser pool prefill started for {warmed_projects} project(s)")
-        except Exception as e:
-            print(f"⚠ Remote browser pool prefill failed: {e}")
-
     # Start 429 auto-unban task
     import asyncio
     async def auto_unban_task():
-        """定时任务：每小时检查并解禁429被禁用的token"""
+        """定时任务：按当前策略周期检查并解禁429被禁用的token。"""
         while True:
             try:
-                await asyncio.sleep(3600)  # 每小时执行一次
+                auto_unban_hours = max(1, int(config.rate_limit_auto_unban_hours))
+                check_interval = max(300, min(3600, auto_unban_hours * 300))
+                await asyncio.sleep(check_interval)
                 await token_manager.auto_unban_429_tokens()
             except Exception as e:
                 print(f"❌ Auto-unban task error: {e}")
 
     auto_unban_task_handle = asyncio.create_task(auto_unban_task())
+
+    async def auto_refresh_credits_task():
+        """定时任务：周期性刷新活跃账号余额，便于充值后自动召回。"""
+        while True:
+            try:
+                credit_refresh_interval = config.active_token_credit_refresh_interval_seconds
+                if credit_refresh_interval <= 0:
+                    await asyncio.sleep(60)
+                    continue
+                await asyncio.sleep(credit_refresh_interval)
+                summary = await token_manager.refresh_active_tokens_credits()
+                print(
+                    "✓ Managed token credits refreshed "
+                    f"(total={summary['total']}, success={summary['success']}, "
+                    f"failed={summary['failed']}, disabled={summary['disabled']}, "
+                    f"reactivated={summary['reactivated']})"
+                )
+            except Exception as e:
+                print(f"❌ Auto credit refresh task error: {e}")
+
+    auto_refresh_credits_task_handle = None
+    current_credit_refresh_interval = config.active_token_credit_refresh_interval_seconds
+    if current_credit_refresh_interval > 0:
+        auto_refresh_credits_task_handle = asyncio.create_task(auto_refresh_credits_task())
 
     print(f"✓ Database initialized")
     print(f"✓ Total tokens: {len(tokens)}")
@@ -138,7 +157,14 @@ async def lifespan(app: FastAPI):
         print("✓ File cache cleanup task started")
     else:
         print("✓ File cache cleanup task disabled (timeout <= 0)")
-    print(f"✓ 429 auto-unban task started (runs every hour)")
+    print("✓ 429 auto-unban task started (dynamic interval)")
+    if auto_refresh_credits_task_handle:
+        print(
+            "✓ Active token credit refresh task started "
+            f"(runs every {current_credit_refresh_interval}s)"
+        )
+    else:
+        print("✓ Active token credit refresh task disabled")
     print(f"✓ Server running on http://{config.server_host}:{config.server_port}")
     print("=" * 60)
 
@@ -154,12 +180,19 @@ async def lifespan(app: FastAPI):
         await auto_unban_task_handle
     except asyncio.CancelledError:
         pass
+    if auto_refresh_credits_task_handle:
+        auto_refresh_credits_task_handle.cancel()
+        try:
+            await auto_refresh_credits_task_handle
+        except asyncio.CancelledError:
+            pass
     # Close browser if initialized
     if browser_service:
         await browser_service.close()
         print("✓ Browser captcha service closed")
     print("✓ File cache cleanup task stopped")
     print("✓ 429 auto-unban task stopped")
+    print("✓ Active token credit refresh task stopped")
 
 
 # Initialize components
@@ -181,6 +214,7 @@ generation_handler = GenerationHandler(
 # Set dependencies
 routes.set_generation_handler(generation_handler)
 admin.set_dependencies(token_manager, proxy_manager, db, concurrency_manager)
+capture_debug.set_dependencies(db)
 
 # Create FastAPI app
 app = FastAPI(
@@ -202,6 +236,7 @@ app.add_middleware(
 # Include routers
 app.include_router(routes.router)
 app.include_router(admin.router)
+app.include_router(capture_debug.router)
 
 # Static files - serve tmp directory for cached files
 tmp_dir = Path(__file__).parent.parent / "tmp"

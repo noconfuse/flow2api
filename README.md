@@ -86,6 +86,10 @@ docker compose -f docker-compose.headed.yml logs -f
 - API 端口：`8000`
 - 进入管理后台后，将验证码方式设为 `browser` 或 `personal`
 
+如果你使用当前仓库里的“宿主机 Chrome + 容器后端自动拉起 profile”方案，还需要在宿主机上常驻运行浏览器启动桥。可直接参考：
+
+- [宿主机浏览器启动桥常驻服务](docs/browser-profile-host-bridge-service.md)
+
 ### 方式二：本地部署
 
 ```bash
@@ -115,6 +119,23 @@ python main.py
 
 - **用户名**: `admin`
 - **密码**: `admin`
+
+### Google Flow 号池部署
+
+如果你是要把这个项目作为“100+ Google Flow 账号统一对外提供服务”的号池网关使用，可以直接参考：
+
+- [Google Flow 号池部署说明](docs/googleflow-account-pool.md)
+
+这份文档包含：
+
+- 大号池推荐配置
+- 批量导入 `session_token` 的脚本用法
+- 对外统一 API 调用方式
+- 代理和并发建议
+
+如果你要长期维护 100+ 账号，并采用“热池/冷池 + 浏览器 profile + 插件自动回传”的方式，可以继续参考：
+
+- [100+ Google Flow 账号热池/冷池运维方案](docs/hot-cold-pool-architecture.md)
 
 ## 📈 监控接口
 

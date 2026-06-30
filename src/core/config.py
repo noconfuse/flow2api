@@ -1,10 +1,17 @@
 """Configuration management for Flow2API"""
-import tomli
+try:
+    import tomllib as toml_loader
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
+    import tomli as toml_loader
 from pathlib import Path
 from typing import Dict, Any, Optional
 
 DEFAULT_YESCAPTCHA_TASK_TYPE = "RecaptchaV3TaskProxylessM1"
+LEGACY_YESCAPTCHA_TASK_TYPE_ALIASES = {
+    "RecaptchaV3Task": "RecaptchaV3EnterpriseTask",
+}
 YESCAPTCHA_TASK_TYPE_OPTIONS = {
+    "RecaptchaV3EnterpriseTask": None,
     "RecaptchaV3TaskProxyless": None,
     "RecaptchaV3TaskProxylessM1": None,
     "RecaptchaV3TaskProxylessM1S7": 0.7,
@@ -14,6 +21,7 @@ YESCAPTCHA_TASK_TYPE_OPTIONS = {
 
 def normalize_yescaptcha_task_type(task_type: Optional[str]) -> str:
     normalized = (task_type or "").strip()
+    normalized = LEGACY_YESCAPTCHA_TASK_TYPE_ALIASES.get(normalized, normalized)
     if normalized in YESCAPTCHA_TASK_TYPE_OPTIONS:
         return normalized
     return DEFAULT_YESCAPTCHA_TASK_TYPE
@@ -21,6 +29,11 @@ def normalize_yescaptcha_task_type(task_type: Optional[str]) -> str:
 
 def get_yescaptcha_min_score(task_type: Optional[str]) -> Optional[float]:
     return YESCAPTCHA_TASK_TYPE_OPTIONS.get(normalize_yescaptcha_task_type(task_type))
+
+
+def yescaptcha_task_type_requires_proxy(task_type: Optional[str]) -> bool:
+    normalized = normalize_yescaptcha_task_type(task_type)
+    return normalized == "RecaptchaV3EnterpriseTask"
 
 
 class Config:
@@ -38,7 +51,7 @@ class Config:
         if not config_path.exists():
             config_path = config_dir / "setting_example.toml"
         with open(config_path, "rb") as f:
-            return tomli.load(f)
+            return toml_loader.load(f)
 
     def reload_config(self):
         """Reload configuration from file"""
@@ -225,12 +238,107 @@ class Config:
             return 0
 
     @property
+    def flow_video_frontend_event_mode(self) -> str:
+        """视频前端事件发送时机: before/after/both/off。"""
+        mode = str(
+            self._config.get("flow", {}).get("video_frontend_event_mode", "before")
+        ).strip().lower()
+        if mode in {"before", "after", "both", "off"}:
+            return mode
+        return "before"
+
+    def set_flow_video_frontend_event_mode(self, mode: str):
+        """Set video frontend event mode."""
+        if "flow" not in self._config:
+            self._config["flow"] = {}
+        normalized = str(mode or "before").strip().lower()
+        if normalized not in {"before", "after", "both", "off"}:
+            normalized = "before"
+        self._config["flow"]["video_frontend_event_mode"] = normalized
+
+    @property
     def poll_interval(self) -> float:
         return self._config["flow"]["poll_interval"]
 
     @property
     def max_poll_attempts(self) -> int:
         return self._config["flow"]["max_poll_attempts"]
+
+    @property
+    def exhausted_credit_threshold(self) -> int:
+        """账号余额小于等于该值时视为已耗尽，不再参与调度。"""
+        value = self._config.get("flow", {}).get("exhausted_credit_threshold", 0)
+        try:
+            return max(0, int(value))
+        except Exception:
+            return 0
+
+    def set_exhausted_credit_threshold(self, value: int):
+        """Set exhausted credit threshold."""
+        if "flow" not in self._config:
+            self._config["flow"] = {}
+        try:
+            normalized = max(0, int(value))
+        except Exception:
+            normalized = 0
+        self._config["flow"]["exhausted_credit_threshold"] = normalized
+
+    @property
+    def low_credit_threshold(self) -> int:
+        """账号余额小于等于该值时视为低余额，参与调度但降低优先级。"""
+        value = self._config.get("flow", {}).get("low_credit_threshold", 100)
+        try:
+            return max(self.exhausted_credit_threshold, int(value))
+        except Exception:
+            return 100
+
+    def set_low_credit_threshold(self, value: int):
+        """Set low credit threshold."""
+        if "flow" not in self._config:
+            self._config["flow"] = {}
+        try:
+            normalized = max(self.exhausted_credit_threshold, int(value))
+        except Exception:
+            normalized = max(self.exhausted_credit_threshold, 100)
+        self._config["flow"]["low_credit_threshold"] = normalized
+
+    @property
+    def active_token_credit_refresh_interval_seconds(self) -> int:
+        """活跃账号余额自动刷新周期，0 表示关闭。"""
+        value = self._config.get("flow", {}).get("active_token_credit_refresh_interval_seconds", 900)
+        try:
+            return max(0, int(value))
+        except Exception:
+            return 900
+
+    def set_active_token_credit_refresh_interval_seconds(self, value: int):
+        """Set active token credit refresh interval."""
+        if "flow" not in self._config:
+            self._config["flow"] = {}
+        try:
+            normalized = max(0, int(value))
+        except Exception:
+            normalized = 900
+        self._config["flow"]["active_token_credit_refresh_interval_seconds"] = normalized
+
+    @property
+    def rate_limit_auto_unban_hours(self) -> int:
+        """429 限流账号自动解禁时长（小时）。"""
+        value = self._config.get("flow", {}).get("rate_limit_auto_unban_hours", 12)
+        try:
+            return max(1, int(value))
+        except Exception:
+            return 12
+
+    def set_rate_limit_auto_unban_hours(self, value: int):
+        """Set 429 auto-unban duration in hours."""
+        if "flow" not in self._config:
+            self._config["flow"] = {}
+        try:
+            normalized = max(1, int(value))
+        except Exception:
+            normalized = 12
+        self._config["flow"]["rate_limit_auto_unban_hours"] = normalized
 
     @property
     def server_host(self) -> str:
@@ -337,6 +445,26 @@ class Config:
         self._config["call_logic"]["call_mode"] = normalized
         self._config["call_logic"]["polling_mode_enabled"] = normalized == "polling"
 
+    def set_flow_image_slot_wait_timeout(self, timeout: float):
+        """Set image hard slot wait timeout."""
+        if "flow" not in self._config:
+            self._config["flow"] = {}
+        try:
+            normalized = max(1.0, min(600.0, float(timeout)))
+        except Exception:
+            normalized = 120.0
+        self._config["flow"]["image_slot_wait_timeout"] = normalized
+
+    def set_flow_video_slot_wait_timeout(self, timeout: float):
+        """Set video hard slot wait timeout."""
+        if "flow" not in self._config:
+            self._config["flow"] = {}
+        try:
+            normalized = max(1.0, min(600.0, float(timeout)))
+        except Exception:
+            normalized = 120.0
+        self._config["flow"]["video_slot_wait_timeout"] = normalized
+
     @property
     def upsample_timeout(self) -> int:
         """Get upsample (4K/2K) timeout in seconds"""
@@ -386,7 +514,8 @@ class Config:
     @property
     def captcha_method(self) -> str:
         """Get captcha method"""
-        return self._config.get("captcha", {}).get("captcha_method", "yescaptcha")
+        method = self._config.get("captcha", {}).get("captcha_method", "yescaptcha")
+        return "personal" if method == "remote_browser" else method
 
     def set_captcha_method(self, method: str):
         """Set captcha method"""
@@ -463,6 +592,42 @@ class Config:
             return max(60, int(value))
         except Exception:
             return 600
+
+    @property
+    def personal_browser_user_data_dir(self) -> str:
+        """personal 模式显式指定 user-data-dir。"""
+        return str(
+            self._config.get("captcha", {}).get("personal_browser_user_data_dir", "")
+        ).strip()
+
+    @property
+    def personal_browser_profile_source_dir(self) -> str:
+        """personal 模式用于克隆可信 Chrome 资料的源目录。"""
+        return str(
+            self._config.get("captcha", {}).get("personal_browser_profile_source_dir", "")
+        ).strip()
+
+    @property
+    def personal_browser_profile_directory(self) -> str:
+        """personal 模式要使用的 Chrome profile 目录名，例如 Default/Profile 1。"""
+        value = str(
+            self._config.get("captcha", {}).get("personal_browser_profile_directory", "Default")
+        ).strip()
+        return value or "Default"
+
+    @property
+    def browser_startup_cookie_enabled(self) -> bool:
+        """是否在浏览器启动时注入系统级明文 Cookie。"""
+        return bool(
+            self._config.get("captcha", {}).get("browser_startup_cookie_enabled", False)
+        )
+
+    @property
+    def browser_startup_cookie(self) -> str:
+        """浏览器启动时注入的系统级明文 Cookie 文本。"""
+        return str(
+            self._config.get("captcha", {}).get("browser_startup_cookie", "")
+        ).strip()
 
     def set_personal_max_resident_tabs(self, value: int):
         """设置内置浏览器打码单实例共享标签页上限"""
@@ -600,47 +765,6 @@ class Config:
         if "captcha" not in self._config:
             self._config["captcha"] = {}
         self._config["captcha"]["capsolver_base_url"] = base_url
-
-    @property
-    def remote_browser_base_url(self) -> str:
-        """Get remote browser captcha service base URL"""
-        return self._config.get("captcha", {}).get("remote_browser_base_url", "")
-
-    def set_remote_browser_base_url(self, base_url: str):
-        """Set remote browser captcha service base URL"""
-        if "captcha" not in self._config:
-            self._config["captcha"] = {}
-        self._config["captcha"]["remote_browser_base_url"] = (base_url or "").strip()
-
-    @property
-    def remote_browser_api_key(self) -> str:
-        """Get remote browser captcha service API key"""
-        return self._config.get("captcha", {}).get("remote_browser_api_key", "")
-
-    def set_remote_browser_api_key(self, api_key: str):
-        """Set remote browser captcha service API key"""
-        if "captcha" not in self._config:
-            self._config["captcha"] = {}
-        self._config["captcha"]["remote_browser_api_key"] = (api_key or "").strip()
-
-    @property
-    def remote_browser_timeout(self) -> int:
-        """Get remote browser captcha request timeout (seconds)"""
-        timeout = self._config.get("captcha", {}).get("remote_browser_timeout", 60)
-        try:
-            return max(5, int(timeout))
-        except Exception:
-            return 60
-
-    def set_remote_browser_timeout(self, timeout: int):
-        """Set remote browser captcha request timeout (seconds)"""
-        if "captcha" not in self._config:
-            self._config["captcha"] = {}
-        try:
-            normalized = max(5, int(timeout))
-        except Exception:
-            normalized = 60
-        self._config["captcha"]["remote_browser_timeout"] = normalized
 
 
 # Global config instance

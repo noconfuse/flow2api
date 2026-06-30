@@ -280,6 +280,25 @@ MODEL_CONFIG = {
         "aspect_ratio": "VIDEO_ASPECT_RATIO_LANDSCAPE",
         "supports_images": False
     },
+    # omni-flash / abra_t2v (基础别名，横竖屏)
+    "omni-flash-t2v_portrait": {
+        "type": "video",
+        "video_type": "t2v",
+        "model_key": "abra_t2v",
+        "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
+        "supports_images": False,
+        "use_v2_model_config": True,
+        "allow_tier_upgrade": False,
+    },
+    "omni-flash-t2v_landscape": {
+        "type": "video",
+        "video_type": "t2v",
+        "model_key": "abra_t2v",
+        "aspect_ratio": "VIDEO_ASPECT_RATIO_LANDSCAPE",
+        "supports_images": False,
+        "use_v2_model_config": True,
+        "allow_tier_upgrade": False,
+    },
     # veo_3_1_t2v_lite (横竖屏，来自 labs.google.har)
     "veo_3_1_t2v_lite_portrait": {
         "type": "video",
@@ -672,6 +691,26 @@ MODEL_CONFIG = {
         "supports_images": False,
         "requires_video_id": True,
     },
+    "omni-flash-edit_portrait": {
+        "type": "video",
+        "video_type": "edit",
+        "model_key": "abra_edit",
+        "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
+        "supports_images": False,
+        "requires_video_id": True,
+        "requires_frame_range": True,
+        "allow_tier_upgrade": False,
+    },
+    "omni-flash-edit_landscape": {
+        "type": "video",
+        "video_type": "edit",
+        "model_key": "abra_edit",
+        "aspect_ratio": "VIDEO_ASPECT_RATIO_LANDSCAPE",
+        "supports_images": False,
+        "requires_video_id": True,
+        "requires_frame_range": True,
+        "allow_tier_upgrade": False,
+    },
 }
 
 
@@ -712,6 +751,34 @@ def _make_i2v_config(
     cfg: Dict[str, Any] = {
         "type": "video",
         "video_type": "i2v",
+        "model_key": model_key,
+        "aspect_ratio": aspect_ratio,
+        "supports_images": True,
+        "min_images": min_images,
+        "max_images": max_images,
+    }
+    if use_v2_model_config:
+        cfg["use_v2_model_config"] = True
+    if not allow_tier_upgrade:
+        cfg["allow_tier_upgrade"] = False
+    if upsample:
+        cfg["upsample"] = upsample
+    return cfg
+
+
+def _make_r2v_config(
+    model_key: str,
+    aspect_ratio: str,
+    *,
+    min_images: int = 1,
+    max_images: int = 3,
+    use_v2_model_config: bool = False,
+    allow_tier_upgrade: bool = True,
+    upsample: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    cfg: Dict[str, Any] = {
+        "type": "video",
+        "video_type": "r2v",
         "model_key": model_key,
         "aspect_ratio": aspect_ratio,
         "supports_images": True,
@@ -900,6 +967,75 @@ def _apply_veo_3_1_model_updates():
 _apply_veo_3_1_model_updates()
 
 
+def _apply_omni_flash_model_updates():
+    """Expose Omni Flash as a public family while keeping upstream abra_* keys internal."""
+    landscape = "VIDEO_ASPECT_RATIO_LANDSCAPE"
+    portrait = "VIDEO_ASPECT_RATIO_PORTRAIT"
+
+    def add_alias(alias: str, target: str):
+        MODEL_CONFIG[alias] = dict(MODEL_CONFIG[target])
+
+    for seconds in (4, 6, 8, 10):
+        suffix = f"{seconds}s"
+        upstream_model_key = f"abra_t2v_{suffix}"
+
+        MODEL_CONFIG[f"omni-flash-t2v_{suffix}"] = _make_t2v_config(
+            upstream_model_key,
+            landscape,
+            use_v2_model_config=True,
+            allow_tier_upgrade=False,
+        )
+        MODEL_CONFIG[f"omni-flash-t2v_portrait_{suffix}"] = _make_t2v_config(
+            upstream_model_key,
+            portrait,
+            use_v2_model_config=True,
+            allow_tier_upgrade=False,
+        )
+        add_alias(f"omni-flash-t2v_landscape_{suffix}", f"omni-flash-t2v_{suffix}")
+
+    MODEL_CONFIG["omni-flash-r2v_landscape"] = _make_r2v_config(
+        "abra_r2v",
+        landscape,
+        min_images=1,
+        max_images=3,
+        use_v2_model_config=True,
+        allow_tier_upgrade=False,
+    )
+    MODEL_CONFIG["omni-flash-r2v_portrait"] = _make_r2v_config(
+        "abra_r2v",
+        portrait,
+        min_images=1,
+        max_images=3,
+        use_v2_model_config=True,
+        allow_tier_upgrade=False,
+    )
+
+    for seconds in (4, 6, 8, 10):
+        suffix = f"{seconds}s"
+        upstream_model_key = f"abra_r2v_{suffix}"
+
+        MODEL_CONFIG[f"omni-flash-r2v_{suffix}"] = _make_r2v_config(
+            upstream_model_key,
+            landscape,
+            min_images=1,
+            max_images=3,
+            use_v2_model_config=True,
+            allow_tier_upgrade=False,
+        )
+        MODEL_CONFIG[f"omni-flash-r2v_portrait_{suffix}"] = _make_r2v_config(
+            upstream_model_key,
+            portrait,
+            min_images=1,
+            max_images=3,
+            use_v2_model_config=True,
+            allow_tier_upgrade=False,
+        )
+        add_alias(f"omni-flash-r2v_landscape_{suffix}", f"omni-flash-r2v_{suffix}")
+
+
+_apply_omni_flash_model_updates()
+
+
 def _known_video_model_keys() -> set[str]:
     return {
         cfg["model_key"]
@@ -936,6 +1072,14 @@ class GenerationHandler:
             flow_client=flow_client,
         )
 
+    def _create_slot_state(self) -> Dict[str, Any]:
+        """Track one request's hard concurrency slot state."""
+        return {
+            "active": False,
+            "token_id": None,
+            "generation_type": None,
+        }
+
     def _create_generation_result(self) -> Dict[str, Any]:
         """????????????????"""
         return dict(success=False, error_message=None, error_emitted=False)
@@ -946,6 +1090,61 @@ class GenerationHandler:
             "url": None,
             "generated_assets": None,
             "base_url": None,
+        }
+
+    def _find_nested_string(self, value: Any, keys: tuple[str, ...]) -> Optional[str]:
+        if isinstance(value, dict):
+            for key in keys:
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+            for candidate in value.values():
+                found = self._find_nested_string(candidate, keys)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for item in value:
+                found = self._find_nested_string(item, keys)
+                if found:
+                    return found
+        return None
+
+    def _extract_video_delivery_info(self, operation: Dict[str, Any]) -> Dict[str, str]:
+        operation_body = operation.get("operation") if isinstance(operation.get("operation"), dict) else {}
+        metadata = operation_body.get("metadata") if isinstance(operation_body.get("metadata"), dict) else {}
+        video_info = metadata.get("video") if isinstance(metadata.get("video"), dict) else {}
+
+        video_url = (
+            self._find_nested_string(video_info, ("fifeUrl", "videoUrl", "outputUri", "downloadUri", "url", "uri"))
+            or self._find_nested_string(metadata, ("fifeUrl", "videoUrl", "outputUri", "downloadUri"))
+            or self._find_nested_string(operation, ("fifeUrl", "videoUrl", "outputUri", "downloadUri"))
+            or ""
+        )
+        if video_url and not (
+            video_url.startswith("http://")
+            or video_url.startswith("https://")
+            or video_url.startswith("/")
+        ):
+            video_url = ""
+
+        import re as _re
+        uuid_match = _re.search(r'/video/([0-9a-f-]{36})', video_url or '')
+        video_media_id = (
+            (uuid_match.group(1) if uuid_match else "")
+            or video_info.get("mediaGenerationId", "")
+            or operation.get("mediaName", "")
+            or operation_body.get("mediaGenerationId", "")
+            or operation_body.get("name", "")
+        )
+        aspect_ratio = (
+            video_info.get("aspectRatio", "")
+            or self._find_nested_string(metadata, ("aspectRatio", "videoAspectRatio"))
+            or "VIDEO_ASPECT_RATIO_LANDSCAPE"
+        )
+        return {
+            "video_url": video_url,
+            "video_media_id": video_media_id,
+            "aspect_ratio": aspect_ratio,
         }
 
     def _mark_generation_failed(self, generation_result: Optional[Dict[str, Any]], error_message: str):
@@ -968,6 +1167,148 @@ class GenerationHandler:
         if len(text) <= max_length:
             return text
         return f"{text[:max_length - 3]}..."
+
+    def _is_rate_limit_error(self, error_message: Any) -> bool:
+        """Detect rate-limit style upstream errors that should ban the token immediately."""
+        text = str(error_message or "").strip().lower()
+        if not text:
+            return False
+        markers = (
+            "429",
+            "too many requests",
+            "rate limit",
+            "rate_limit",
+            "resource_exhausted",
+            "media_generation_status_error_429",
+        )
+        return any(marker in text for marker in markers)
+
+    def _is_browser_captcha_infra_error(self, error_message: Any) -> bool:
+        """Detect browser captcha failures that should not ban the business token."""
+        text = str(error_message or "").strip().lower()
+        if not text:
+            return False
+        if config.captcha_method != "browser":
+            return False
+        markers = (
+            "failed to obtain recaptcha token",
+            "reCAPTCHA evaluation failed".lower(),
+        )
+        return any(marker in text for marker in markers)
+
+    def _is_automation_risk_error(self, error_message: Any) -> bool:
+        """Detect UI automation risk-control failures that should not hard-disable the account."""
+        text = str(error_message or "").strip().lower()
+        if not text:
+            return False
+        markers = (
+            "abnormal activity",
+            "risk control",
+            "异常活动",
+            "submit_failed:abnormal_activity",
+        )
+        return any(marker in text for marker in markers)
+
+    async def _handle_token_failure(self, token, error_message: Any):
+        """Record token failure, promoting 429-like errors to immediate temporary bans."""
+        if not token:
+            return
+        if self._is_rate_limit_error(error_message):
+            await self.token_manager.ban_token_for_429(token.id)
+            return
+        if self._is_browser_captcha_infra_error(error_message):
+            debug_logger.log_warning(
+                f"[TOKEN_ERROR_SKIP] Token {token.id} browser captcha infrastructure failed; skip record_error"
+            )
+            return
+        if self._is_automation_risk_error(error_message):
+            risk_state = await self.token_manager.mark_automation_risk(token.id, str(error_message))
+            debug_logger.log_warning(
+                f"[TOKEN_AUTOMATION_RISK] Token {token.id} marked as automation-sensitive: {risk_state}"
+            )
+            return
+        await self.token_manager.record_error(token.id)
+
+    async def _acquire_generation_slot(
+        self,
+        token,
+        generation_type: str,
+        request_log_state: Optional[Dict[str, Any]],
+        pending_token_state: Optional[Dict[str, bool]],
+        perf_trace: Optional[Dict[str, Any]],
+        slot_state: Optional[Dict[str, Any]],
+    ) -> tuple[bool, int]:
+        """Acquire a real per-token concurrency slot before submitting upstream generation."""
+        if not self.concurrency_manager:
+            return True, 0
+
+        is_image = generation_type == "image"
+        wait_timeout = (
+            config.flow_image_slot_wait_timeout
+            if is_image
+            else config.flow_video_slot_wait_timeout
+        )
+
+        await self._update_request_log_progress(
+            request_log_state,
+            token_id=token.id,
+            status_text="waiting_for_slot",
+            progress=24,
+            response_extra={"generation_type": generation_type},
+        )
+
+        if is_image:
+            acquired, waited_ms = await self.concurrency_manager.wait_acquire_image(
+                token.id,
+                wait_timeout,
+            )
+            trace = perf_trace.setdefault("image_generation", {}) if isinstance(perf_trace, dict) else None
+        else:
+            acquired, waited_ms = await self.concurrency_manager.wait_acquire_video(
+                token.id,
+                wait_timeout,
+            )
+            trace = perf_trace.setdefault("video_generation", {}) if isinstance(perf_trace, dict) else None
+
+        if isinstance(trace, dict):
+            trace["slot_wait_ms"] = waited_ms
+
+        if not acquired:
+            return False, waited_ms
+
+        if pending_token_state and pending_token_state.get("active") and self.load_balancer:
+            await self.load_balancer.release_pending(
+                token.id,
+                for_image_generation=is_image,
+                for_video_generation=not is_image,
+            )
+            pending_token_state["active"] = False
+
+        if isinstance(slot_state, dict):
+            slot_state["active"] = True
+            slot_state["token_id"] = token.id
+            slot_state["generation_type"] = generation_type
+
+        return True, waited_ms
+
+    async def _release_generation_slot(self, slot_state: Optional[Dict[str, Any]]):
+        """Release the previously acquired hard concurrency slot."""
+        if not self.concurrency_manager or not isinstance(slot_state, dict) or not slot_state.get("active"):
+            return
+
+        token_id = slot_state.get("token_id")
+        generation_type = slot_state.get("generation_type")
+        if token_id is None:
+            slot_state["active"] = False
+            return
+
+        if generation_type == "image":
+            await self.concurrency_manager.release_image(token_id)
+        elif generation_type == "video":
+            await self.concurrency_manager.release_video(token_id)
+
+        slot_state["active"] = False
+
 
     def _resolve_video_model_key_for_tier(self, model_config: Dict[str, Any], user_tier: str) -> tuple[str, Optional[str]]:
         """根据账号层级调整视频模型 key。"""
@@ -1031,6 +1372,11 @@ class GenerationHandler:
         stream: bool = False,
         base_url_override: Optional[str] = None,
         video_media_id: Optional[str] = None,
+        video_edit_params: Optional[Dict[str, Any]] = None,
+        preferred_token_id: Optional[int] = None,
+        preferred_project_id: Optional[str] = None,
+        source_image_media_ids: Optional[List[str]] = None,
+        source_image_selected_material_index: Optional[int] = None,
     ) -> AsyncGenerator:
         """统一生成入口
 
@@ -1044,6 +1390,7 @@ class GenerationHandler:
         token = None
         generation_type = None
         pending_token_state = {"active": False}
+        slot_state = self._create_slot_state()
         request_id = f"gen-{int(start_time * 1000)}-{id(asyncio.current_task())}"
         perf_trace: Dict[str, Any] = {
             "request_id": request_id,
@@ -1070,12 +1417,21 @@ class GenerationHandler:
         model_config = MODEL_CONFIG[model]
         generation_type = model_config["type"]
         video_type_for_op = model_config.get("video_type", "")
-        request_operation = "extend_video" if video_type_for_op == "extend" else f"generate_{generation_type}"
+        if video_type_for_op == "extend":
+            request_operation = "extend_video"
+        elif video_type_for_op == "edit":
+            request_operation = "edit_video"
+        else:
+            request_operation = f"generate_{generation_type}"
         prompt_for_log = prompt if len(prompt) <= 2000 else f"{prompt[:2000]}...(truncated)"
         request_payload = {
             "model": model,
             "prompt": prompt_for_log,
             "has_images": images is not None and len(images) > 0,
+            "preferred_token_id": preferred_token_id,
+            "preferred_project_id": preferred_project_id,
+            "source_image_media_ids": source_image_media_ids or [],
+            "source_image_selected_material_index": source_image_selected_material_index,
         }
         debug_logger.log_info(f"[GENERATION] 开始生成 - 模型: {model}, 类型: {generation_type}, Prompt: {prompt[:50]}...")
 
@@ -1107,6 +1463,7 @@ class GenerationHandler:
                 reserve=False,
                 enforce_concurrency_filter=False,
                 track_pending=True,
+                preferred_token_id=preferred_token_id,
             )
         else:
             token = await self.load_balancer.select_token(
@@ -1115,12 +1472,42 @@ class GenerationHandler:
                 reserve=False,
                 enforce_concurrency_filter=False,
                 track_pending=True,
+                preferred_token_id=preferred_token_id,
             )
         perf_trace["token_select_ms"] = int((time.time() - token_select_started_at) * 1000)
 
         if not token:
             error_msg = None
-            if self.load_balancer and hasattr(self.load_balancer, "get_unavailable_reason"):
+            if preferred_token_id is not None:
+                preferred_token = await self.token_manager.get_token(preferred_token_id)
+                reusable_personal_preferred_token = bool(
+                    preferred_token
+                    and str(getattr(preferred_token, "ban_reason", "") or "").strip() == "at_refresh_failed"
+                    and str(getattr(config, "captcha_method", "") or "").strip() == "personal"
+                    and str(getattr(preferred_token, "st", "") or "").strip()
+                )
+                if reusable_personal_preferred_token:
+                    token = preferred_token
+                    debug_logger.log_warning(
+                        f"[GENERATION] 指定来源 Token {preferred_token_id} 曾因 AT 刷新失败被禁用，"
+                        "当前为 personal 模式，允许重新进入自动刷新链路"
+                    )
+                elif not preferred_token:
+                    error_msg = f"指定来源 Token 不存在: {preferred_token_id}"
+                elif str(getattr(preferred_token, "ban_reason", "") or "").strip() == "at_refresh_failed":
+                    error_msg = (
+                        f"指定来源 Token 的 AT 刷新失败，当前打码模式为 {config.captcha_method}，"
+                        "ST 自动刷新仅在 personal 模式下可用；请更新 ST 或切换到 personal 模式后重试"
+                    )
+                elif not preferred_token.is_active:
+                    error_msg = f"指定来源 Token 当前已禁用，无法沿用原账号: {preferred_token_id}"
+                elif generation_type == "image" and not preferred_token.image_enabled:
+                    error_msg = f"指定来源 Token 未开启图片能力，无法沿用原账号: {preferred_token_id}"
+                elif generation_type == "video" and not preferred_token.video_enabled:
+                    error_msg = f"指定来源 Token 未开启视频能力，无法沿用原账号: {preferred_token_id}"
+                else:
+                    error_msg = f"指定来源 Token 当前不可用，无法沿用原账号: {preferred_token_id}"
+            elif self.load_balancer and hasattr(self.load_balancer, "get_unavailable_reason"):
                 error_msg = await self.load_balancer.get_unavailable_reason(
                     for_image_generation=(generation_type == "image"),
                     for_video_generation=(generation_type == "video"),
@@ -1146,7 +1533,9 @@ class GenerationHandler:
             yield self._create_error_response(error_msg, status_code=503)
             return
 
-        debug_logger.log_info(f"[GENERATION] 已选择Token: {token.id} ({token.email})")
+        debug_logger.log_info(
+            f"[GENERATION] 已选择Token: {token.id} ({token.email}), preferred_token_id={preferred_token_id}"
+        )
         pending_token_state["active"] = True
         await self._update_request_log_progress(
             request_log_state,
@@ -1194,7 +1583,11 @@ class GenerationHandler:
                 return
 
             ensure_project_started_at = time.time()
-            project_id = await self.token_manager.ensure_project_exists(token.id)
+            preferred_project_id = str(preferred_project_id or "").strip()
+            if preferred_project_id:
+                project_id = preferred_project_id
+            else:
+                project_id = await self.token_manager.ensure_project_exists(token.id)
             perf_trace["ensure_project_ms"] = int((time.time() - ensure_project_started_at) * 1000)
             debug_logger.log_info(f"[GENERATION] Project ID: {project_id}")
             await self._update_request_log_progress(
@@ -1204,12 +1597,25 @@ class GenerationHandler:
                 progress=22,
                 response_extra={"project_id": project_id},
             )
-            prefill_action = "IMAGE_GENERATION" if generation_type == "image" else "VIDEO_GENERATION"
-            await self.flow_client.prefill_remote_browser_pool(
-                project_id=project_id,
-                action=prefill_action,
-                token_id=token.id,
+            slot_acquired, slot_waited_ms = await self._acquire_generation_slot(
+                token=token,
+                generation_type=generation_type,
+                request_log_state=request_log_state,
+                pending_token_state=pending_token_state,
+                perf_trace=perf_trace,
+                slot_state=slot_state,
             )
+            if not slot_acquired:
+                error_msg = (
+                    f"{'图片' if generation_type == 'image' else '视频'}并发等待超时 "
+                    f"(token={token.email}, waited_ms={slot_waited_ms})"
+                )
+                debug_logger.log_error(f"[GENERATION] {error_msg}")
+                record_generation_result(generation_type, "no_token", time.time() - start_time)
+                if stream:
+                    yield self._create_stream_chunk(f"❌ {error_msg}\n")
+                yield self._create_error_response(error_msg, status_code=503)
+                return
 
             # 5. 根据类型处理
             generation_pipeline_started_at = time.time()
@@ -1234,6 +1640,9 @@ class GenerationHandler:
                     request_log_state=request_log_state,
                     pending_token_state=pending_token_state,
                     video_media_id=video_media_id,
+                    video_edit_params=video_edit_params,
+                    source_image_media_ids=source_image_media_ids,
+                    source_image_selected_material_index=source_image_selected_material_index,
                 ):
                     yield chunk
             perf_trace["generation_pipeline_ms"] = int((time.time() - generation_pipeline_started_at) * 1000)
@@ -1242,8 +1651,7 @@ class GenerationHandler:
             if not generation_result.get("success"):
                 error_msg = generation_result.get("error_message") or "生成未成功完成"
                 debug_logger.log_warning(f"[GENERATION] 生成未成功，不扣次数: {error_msg}")
-                if token:
-                    await self.token_manager.record_error(token.id)
+                await self._handle_token_failure(token, error_msg)
                 duration = time.time() - start_time
                 record_generation_result(generation_type, "failed", duration)
                 perf_trace["status"] = "failed"
@@ -1272,6 +1680,8 @@ class GenerationHandler:
 
             # 重置错误计数 (请求成功时清空连续错误计数)
             await self.token_manager.record_success(token.id)
+            if is_video and config.captcha_method == "extension":
+                await self.token_manager.record_automation_success(token.id)
 
             debug_logger.log_info(f"[GENERATION] ✅ 生成成功完成")
 
@@ -1346,9 +1756,7 @@ class GenerationHandler:
         except Exception as e:
             error_msg = f"生成失败: {str(e)}"
             debug_logger.log_error(f"[GENERATION] ❌ {error_msg}")
-            if token:
-                # 记录错误（所有错误统一处理，不再特殊处理429）
-                await self.token_manager.record_error(token.id)
+            await self._handle_token_failure(token, error_msg)
 
             # 先将最终失败状态落库，再返回错误响应，避免日志停在 102。
             duration = time.time() - start_time
@@ -1372,6 +1780,7 @@ class GenerationHandler:
                 yield self._create_stream_chunk(f"❌ {error_msg}\n")
             yield self._create_error_response(error_msg, status_code=500)
         finally:
+            await self._release_generation_slot(slot_state)
             if pending_token_state.get("active") and token and self.load_balancer:
                 await self.load_balancer.release_pending(
                     token.id,
@@ -1412,11 +1821,10 @@ class GenerationHandler:
             image_trace = perf_trace.setdefault("image_generation", {})
             image_trace["input_image_count"] = len(images) if images else 0
 
-        # 不在本地等待图片硬并发槽位；请求一到就直接向上游提交。
         normalized_tier = normalize_user_paygate_tier(token.user_paygate_tier)
 
         if image_trace is not None:
-            image_trace["slot_wait_ms"] = 0
+            image_trace.setdefault("slot_wait_ms", 0)
 
         if images and len(images) > 0:
             await self._update_request_log_progress(request_log_state, token_id=token.id, status_text="uploading_images", progress=28)
@@ -1437,7 +1845,8 @@ class GenerationHandler:
                         token.at,
                         image_bytes,
                         model_config["aspect_ratio"],
-                        project_id=project_id
+                        project_id=project_id,
+                        token_id=token.id,
                     )
                     image_inputs.append({
                         "name": media_id,
@@ -1685,6 +2094,9 @@ class GenerationHandler:
         request_log_state: Optional[Dict[str, Any]] = None,
         pending_token_state: Optional[Dict[str, bool]] = None,
         video_media_id: Optional[str] = None,
+        video_edit_params: Optional[Dict[str, Any]] = None,
+        source_image_media_ids: Optional[List[str]] = None,
+        source_image_selected_material_index: Optional[int] = None,
     ) -> AsyncGenerator:
         """处理视频生成 (异步轮询)"""
 
@@ -1696,11 +2108,10 @@ class GenerationHandler:
             video_trace = perf_trace.setdefault("video_generation", {})
             video_trace["input_image_count"] = len(images) if images else 0
 
-        # 不在本地等待视频硬并发槽位；请求一到就直接向上游提交。
         normalized_tier = normalize_user_paygate_tier(token.user_paygate_tier)
 
         if video_trace is not None:
-            video_trace["slot_wait_ms"] = 0
+            video_trace.setdefault("slot_wait_ms", 0)
 
         await self._update_request_log_progress(request_log_state, token_id=token.id, status_text="preparing_video", progress=24)
 
@@ -1730,22 +2141,29 @@ class GenerationHandler:
 
             # 图片数量
             image_count = len(images) if images else 0
+            source_image_media_ids = [
+                str(media_id or "").strip()
+                for media_id in (source_image_media_ids or [])
+                if str(media_id or "").strip()
+            ]
+            source_image_count = len(source_image_media_ids)
 
             # ========== 验证和处理图片 ==========
 
             # T2V: 文生视频 - 不支持图片
-            if video_type == "t2v":
+            if video_type in {"t2v", "extend", "edit"}:
                 if image_count > 0:
                     if stream:
-                        yield self._create_stream_chunk("⚠️ 文生视频模型不支持上传图片,将忽略图片仅使用文本提示词生成\n")
-                    debug_logger.log_warning(f"[T2V] 模型 {model_config['model_key']} 不支持图片,已忽略 {image_count} 张图片")
+                        yield self._create_stream_chunk("⚠️ 当前视频模型不支持上传图片,将忽略图片仅使用文本提示词和视频引用参数生成\n")
+                    debug_logger.log_warning(f"[VIDEO] 模型 {model_config['model_key']} 不支持图片,已忽略 {image_count} 张图片")
                 images = None  # 清空图片
                 image_count = 0
 
             # I2V: 首尾帧模型 - 需要1-2张图片
             elif video_type == "i2v":
-                if image_count < min_images or image_count > max_images:
-                    error_msg = f"❌ 首尾帧模型需要 {min_images}-{max_images} 张图片,当前提供了 {image_count} 张"
+                effective_image_count = source_image_count or image_count
+                if effective_image_count < min_images or effective_image_count > max_images:
+                    error_msg = f"❌ 首尾帧模型需要 {min_images}-{max_images} 张图片,当前提供了 {effective_image_count} 张"
                     if stream:
                         yield self._create_stream_chunk(f"{error_msg}\n")
                     self._mark_generation_failed(generation_result, error_msg)
@@ -1754,8 +2172,11 @@ class GenerationHandler:
 
             # R2V: 多图生成 - 当前上游协议最多 3 张参考图
             elif video_type == "r2v":
-                if max_images is not None and image_count > max_images:
-                    error_msg = f"❌ 多图视频模型最多支持 {max_images} 张参考图,当前提供了 {image_count} 张"
+                effective_image_count = source_image_count or image_count
+                if effective_image_count < min_images or (max_images is not None and effective_image_count > max_images):
+                    error_msg = f"❌ 多图视频模型最多支持 {max_images} 张参考图,当前提供了 {effective_image_count} 张"
+                    if effective_image_count < min_images:
+                        error_msg = f"❌ 多图视频模型需要 {min_images}-{max_images} 张参考图,当前提供了 {effective_image_count} 张"
                     if stream:
                         yield self._create_stream_chunk(f"{error_msg}\n")
                     self._mark_generation_failed(generation_result, error_msg)
@@ -1768,41 +2189,75 @@ class GenerationHandler:
             reference_images = []
 
             # I2V: 首尾帧处理
-            if video_type == "i2v" and images:
+            if video_type == "i2v" and source_image_media_ids:
+                start_media_id = source_image_media_ids[0]
+                end_media_id = source_image_media_ids[1] if source_image_count >= 2 else None
+                if stream:
+                    if end_media_id:
+                        yield self._create_stream_chunk("复用已上传的首帧和尾帧图片...\n")
+                        yield self._create_stream_chunk(f"首帧 mediaId: {start_media_id}\n")
+                        yield self._create_stream_chunk(f"尾帧 mediaId: {end_media_id}\n")
+                    else:
+                        yield self._create_stream_chunk("复用已上传的首帧图片...\n")
+                        yield self._create_stream_chunk(f"首帧 mediaId: {start_media_id}\n")
+                debug_logger.log_info(
+                    f"[I2V] 复用了已上传图片: start={start_media_id}, end={end_media_id or '-'}"
+                )
+
+            elif video_type == "i2v" and images:
                 if image_count == 1:
                     # 只有1张图: 仅作为首帧
                     if stream:
                         yield self._create_stream_chunk("上传首帧图片...\n")
                     start_media_id = await self.flow_client.upload_image(
-                        token.at, images[0], model_config["aspect_ratio"], project_id=project_id
+                        token.at, images[0], model_config["aspect_ratio"], project_id=project_id, token_id=token.id
                     )
                     debug_logger.log_info(f"[I2V] 仅上传首帧: {start_media_id}")
+                    if stream:
+                        yield self._create_stream_chunk(f"首帧 mediaId: {start_media_id}\n")
 
                 elif image_count == 2:
                     # 2张图: 首帧+尾帧
                     if stream:
                         yield self._create_stream_chunk("上传首帧和尾帧图片...\n")
                     start_media_id = await self.flow_client.upload_image(
-                        token.at, images[0], model_config["aspect_ratio"], project_id=project_id
+                        token.at, images[0], model_config["aspect_ratio"], project_id=project_id, token_id=token.id
                     )
                     end_media_id = await self.flow_client.upload_image(
-                        token.at, images[1], model_config["aspect_ratio"], project_id=project_id
+                        token.at, images[1], model_config["aspect_ratio"], project_id=project_id, token_id=token.id
                     )
                     debug_logger.log_info(f"[I2V] 上传首尾帧: {start_media_id}, {end_media_id}")
+                    if stream:
+                        yield self._create_stream_chunk(f"首帧 mediaId: {start_media_id}\n")
+                        yield self._create_stream_chunk(f"尾帧 mediaId: {end_media_id}\n")
 
             # R2V: 多图处理
+            elif video_type == "r2v" and source_image_media_ids:
+                if stream:
+                    yield self._create_stream_chunk(f"复用 {source_image_count} 张已有参考图片...\n")
+                for media_id in source_image_media_ids:
+                    reference_images.append({
+                        "imageUsageType": "IMAGE_USAGE_TYPE_ASSET",
+                        "mediaId": media_id
+                    })
+                    if stream:
+                        yield self._create_stream_chunk(f"参考图 mediaId: {media_id}\n")
+                debug_logger.log_info(f"[R2V] 复用了 {len(reference_images)} 张已有参考图片")
+
             elif video_type == "r2v" and images:
                 if stream:
                     yield self._create_stream_chunk(f"上传 {image_count} 张参考图片...\n")
 
                 for img in images:
                     media_id = await self.flow_client.upload_image(
-                        token.at, img, model_config["aspect_ratio"], project_id=project_id
+                        token.at, img, model_config["aspect_ratio"], project_id=project_id, token_id=token.id
                     )
                     reference_images.append({
                         "imageUsageType": "IMAGE_USAGE_TYPE_ASSET",
                         "mediaId": media_id
                     })
+                    if stream:
+                        yield self._create_stream_chunk(f"参考图 mediaId: {media_id}\n")
                 debug_logger.log_info(f"[R2V] 上传了 {len(reference_images)} 张参考图片")
 
             # ========== 调用生成API ==========
@@ -1842,6 +2297,11 @@ class GenerationHandler:
                         model_key=actual_model_key,
                         aspect_ratio=model_config["aspect_ratio"],
                         start_media_id=start_media_id,
+                        selected_material_index=(
+                            int(source_image_selected_material_index)
+                            if source_image_selected_material_index is not None
+                            else None
+                        ),
                         use_v2_model_config=use_v2_model_config,
                         user_paygate_tier=normalized_tier,
                         token_id=token.id,
@@ -1857,6 +2317,11 @@ class GenerationHandler:
                     model_key=model_config["model_key"],
                     aspect_ratio=model_config["aspect_ratio"],
                     reference_images=reference_images,
+                    selected_material_index=(
+                        int(source_image_selected_material_index)
+                        if source_image_selected_material_index is not None
+                        else None
+                    ),
                     user_paygate_tier=normalized_tier,
                     token_id=token.id,
                     token_video_concurrency=token.video_concurrency,
@@ -1882,6 +2347,72 @@ class GenerationHandler:
                     video_media_id=video_media_id,
                     model_key=model_config["model_key"],
                     aspect_ratio=model_config["aspect_ratio"],
+                    user_paygate_tier=normalized_tier,
+                    token_id=token.id,
+                    token_video_concurrency=token.video_concurrency,
+                )
+
+            # Edit: Omni Flash 视频编辑
+            elif video_type == "edit":
+                if not video_edit_params:
+                    error_msg = (
+                        "❌ Omni Flash 视频编辑需要提供源视频和时间范围，"
+                        "请在 image_url 中传入 edit://VIDEO_MEDIA_ID?start_time=0.00&end_time=4.00"
+                    )
+                    if stream:
+                        yield self._create_stream_chunk(f"{error_msg}\n")
+                    self._mark_generation_failed(generation_result, error_msg)
+                    yield self._create_error_response(error_msg, status_code=400)
+                    return
+
+                edit_media_id = str(video_edit_params.get("media_id") or "").strip()
+                start_frame_index = video_edit_params.get("start_frame_index")
+                end_frame_index = video_edit_params.get("end_frame_index")
+                selected_material_index = video_edit_params.get("selected_material_index")
+                start_seconds = video_edit_params.get("start_seconds")
+                end_seconds = video_edit_params.get("end_seconds")
+                source_duration_seconds = video_edit_params.get("source_duration_seconds")
+                has_frame_range = start_frame_index is not None and end_frame_index is not None
+                has_time_range = start_seconds is not None and end_seconds is not None
+                if not edit_media_id or (not has_frame_range and not has_time_range):
+                    error_msg = "❌ Omni Flash 视频编辑参数不完整，必须包含 media_id 和 start_time/end_time 或 start_frame_index/end_frame_index"
+                    if stream:
+                        yield self._create_stream_chunk(f"{error_msg}\n")
+                    self._mark_generation_failed(generation_result, error_msg)
+                    yield self._create_error_response(error_msg, status_code=400)
+                    return
+
+                if has_time_range and not has_frame_range and config.captcha_method != "extension":
+                    error_msg = "❌ 当前仅 extension 模式支持基于时间范围的视频编辑，请改用 start_frame/end_frame 或切到 extension 模式"
+                    if stream:
+                        yield self._create_stream_chunk(f"{error_msg}\n")
+                    self._mark_generation_failed(generation_result, error_msg)
+                    yield self._create_error_response(error_msg, status_code=400)
+                    return
+
+                debug_logger.log_info(
+                    f"[VIDEO EDIT] 编辑视频: media_id={edit_media_id}, "
+                    f"selected_material_index={selected_material_index}, "
+                    f"time={start_seconds}-{end_seconds}, frames={start_frame_index}-{end_frame_index}, "
+                    f"source_duration={source_duration_seconds}"
+                )
+                if stream:
+                    yield self._create_stream_chunk(
+                        f"Omni Flash 视频编辑任务提交中，源视频: {edit_media_id[:8]}...，时间范围: {start_seconds if start_seconds is not None else '-'} - {end_seconds if end_seconds is not None else '-'}\n"
+                    )
+                result = await self.flow_client.generate_video_edit(
+                    at=token.at,
+                    project_id=project_id,
+                    prompt=prompt,
+                    video_media_id=edit_media_id,
+                    selected_material_index=int(selected_material_index) if selected_material_index is not None else None,
+                    model_key=model_config["model_key"],
+                    aspect_ratio=model_config["aspect_ratio"],
+                    start_frame_index=int(start_frame_index) if start_frame_index is not None else None,
+                    end_frame_index=int(end_frame_index) if end_frame_index is not None else None,
+                    start_seconds=float(start_seconds) if start_seconds is not None else None,
+                    end_seconds=float(end_seconds) if end_seconds is not None else None,
+                    source_duration_seconds=float(source_duration_seconds) if source_duration_seconds is not None else None,
                     user_paygate_tier=normalized_tier,
                     token_id=token.id,
                     token_video_concurrency=token.video_concurrency,
@@ -1988,6 +2519,8 @@ class GenerationHandler:
         consecutive_poll_errors = 0
         last_poll_error: Optional[Exception] = None
         max_consecutive_poll_errors = 3
+        success_without_url_attempts = 0
+        max_success_without_url_attempts = 6
 
         for attempt in range(max_attempts):
             await asyncio.sleep(poll_interval)
@@ -2014,23 +2547,54 @@ class GenerationHandler:
                 # 检查状态
                 if status == "MEDIA_GENERATION_STATUS_SUCCESSFUL":
                     # 成功
-                    metadata = operation["operation"].get("metadata", {})
-                    video_info = metadata.get("video", {})
-                    video_url = video_info.get("fifeUrl")
-                    # Extract short UUID from Google Storage URL (e.g., /video/UUID?)
-                    # Both extend API and concat API need this short UUID format,
-                    # NOT the CAUS base64 mediaGenerationId from video_info
-                    import re as _re
-                    _uuid_match = _re.search(r'/video/([0-9a-f-]{36})', video_url or '')
-                    video_media_id = _uuid_match.group(1) if _uuid_match else video_info.get("mediaGenerationId", "")
-                    aspect_ratio = video_info.get("aspectRatio", "VIDEO_ASPECT_RATIO_LANDSCAPE")
+                    delivery_info = self._extract_video_delivery_info(operation)
+                    video_url = delivery_info["video_url"]
+                    video_media_id = delivery_info["video_media_id"]
+                    aspect_ratio = delivery_info["aspect_ratio"]
+
+                    if not video_url and video_media_id:
+                        try:
+                            resolved_video_url = await self.flow_client.resolve_media_redirect_url(
+                                st=token.st,
+                                media_name=video_media_id,
+                                project_id=project_id,
+                            )
+                            if resolved_video_url:
+                                video_url = resolved_video_url
+                        except Exception as e:
+                            debug_logger.log_warning(
+                                f"[VIDEO POLL] resolve_media_redirect_url failed: {e}"
+                            )
 
                     if not video_url:
-                        error_msg = "视频生成失败: 视频URL为空"
+                        success_without_url_attempts += 1
+                        operation_name = (operation.get("operation") or {}).get("name", "")
+                        if success_without_url_attempts < max_success_without_url_attempts:
+                            await self._update_request_log_progress(
+                                request_log_state,
+                                token_id=token.id,
+                                status_text="video_finalizing",
+                                progress=90,
+                                response_extra={
+                                    "upstream_status": status,
+                                    "video_url_ready": False,
+                                    "operation_name": operation_name,
+                                    "media_generation_id": video_media_id,
+                                },
+                            )
+                            if stream:
+                                yield self._create_stream_chunk("视频状态已成功，等待最终视频链接同步...\n")
+                            continue
+
+                        error_msg = (
+                            "视频生成失败: 状态已成功但视频URL为空"
+                            f"（operation={operation_name or 'unknown'}, media={video_media_id or 'unknown'}）"
+                        )
                         await self._fail_video_task(checked_operations, error_msg)
                         self._mark_generation_failed(generation_result, error_msg)
                         yield self._create_error_response(error_msg, status_code=502)
                         return
+                    success_without_url_attempts = 0
 
                     # ========== 视频放大处理 ==========
                     if upsample_config and video_media_id:
@@ -2202,7 +2766,7 @@ class GenerationHandler:
                     )
                     
                     # 返回友好的错误消息，提示用户重试
-                    friendly_error = f"视频生成失败: {error_message}，请重试"
+                    friendly_error = f"视频生成失败: {error_message} (code: {error_code})，请重试"
                     self._mark_generation_failed(generation_result, friendly_error)
                     if stream:
                         yield self._create_stream_chunk(f"❌ {friendly_error}\n")

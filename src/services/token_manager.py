@@ -9,11 +9,18 @@ from ..core.logger import debug_logger
 from ..core.monitoring import record_token_refresh
 from .flow_client import FlowClient
 from .proxy_manager import ProxyManager
+from .browser_cookie_utils import (
+    extract_session_token_from_cookie_payload,
+    merge_browser_cookie_payloads_prefer_live_session,
+    normalize_cookie_storage_text,
+)
 
 
 class TokenManager:
     """Token lifecycle manager with AT auto-refresh"""
 
+    CREDIT_EXHAUSTED_BAN_REASON = "credits_exhausted"
+    AT_REFRESH_FAILED_BAN_REASON = "at_refresh_failed"
     def __init__(self, db: Database, flow_client: FlowClient):
         self.db = db
         self.flow_client = flow_client
@@ -123,7 +130,7 @@ class TokenManager:
         """Select the next project from the pool in round-robin order."""
         ordered_projects = self._sort_projects(projects)
         if not ordered_projects:
-            raise ValueError("No available projects for token")
+            raise ValueError("账号下没有可用项目")
 
         if len(ordered_projects) == 1:
             return ordered_projects[0]
@@ -189,7 +196,16 @@ class TokenManager:
     async def enable_token(self, token_id: int):
         """Enable a token and reset error count"""
         # Enable the token
-        await self.db.update_token(token_id, is_active=True, ban_reason=None, banned_at=None)
+        await self.db.update_token(
+            token_id,
+            is_active=True,
+            ban_reason=None,
+            banned_at=None,
+            automation_risk_score=0,
+            automation_risk_state="healthy",
+            automation_cooldown_until=None,
+            automation_last_risk_reason=None,
+        )
         # Reset error count when enabling (only reset total error_count, keep today_error_count)
         await self.db.reset_error_count(token_id)
 
@@ -197,11 +213,60 @@ class TokenManager:
         """Disable a token"""
         await self.db.update_token(token_id, is_active=False)
 
+    def _normalize_credits_value(self, credits: Optional[int]) -> int:
+        try:
+            return int(credits or 0)
+        except Exception:
+            return 0
+
+    def _is_credit_exhausted_value(self, credits: Optional[int]) -> bool:
+        return self._normalize_credits_value(credits) <= config.exhausted_credit_threshold
+
+    async def _apply_credit_state_after_refresh(
+        self,
+        token: Token,
+        credits: int,
+        user_paygate_tier: Optional[str],
+    ) -> dict:
+        """根据刷新后的余额更新账号状态，支持自动停用和自动召回。"""
+        token_id = token.id
+        if token_id is None:
+            raise ValueError("账号 ID 不能为空")
+
+        updates = {
+            "credits": credits,
+            "user_paygate_tier": user_paygate_tier,
+        }
+        auto_disabled = False
+        reactivated = False
+
+        if self._is_credit_exhausted_value(credits):
+            updates["is_active"] = False
+            updates["ban_reason"] = self.CREDIT_EXHAUSTED_BAN_REASON
+            updates["banned_at"] = datetime.now(timezone.utc)
+            auto_disabled = True
+        elif (
+            token.ban_reason == self.CREDIT_EXHAUSTED_BAN_REASON
+            and not token.is_active
+        ):
+            updates["is_active"] = True
+            updates["ban_reason"] = None
+            updates["banned_at"] = None
+            reactivated = True
+
+        await self.db.update_token(token_id, **updates)
+        return {
+            "credits": credits,
+            "auto_disabled": auto_disabled,
+            "reactivated": reactivated,
+        }
+
     # ========== Token添加 (支持Project创建) ==========
 
     async def add_token(
         self,
-        st: str,
+        st: Optional[str] = None,
+        email: Optional[str] = None,
         project_id: Optional[str] = None,
         project_name: Optional[str] = None,
         remark: Optional[str] = None,
@@ -212,35 +277,52 @@ class TokenManager:
         captcha_proxy_url: Optional[str] = None,
         extension_route_key: Optional[str] = None,
     ) -> Token:
-        """Add a new token and prepare its pooled projects."""
-        existing_token = await self.db.get_token_by_st(st)
-        if existing_token:
-            raise ValueError(f"Token ??????: {existing_token.email}?")
+        """Add a browser-backed account. ST is optional and may be synced later from the profile."""
+        normalized_st = str(st or "").strip()
+        normalized_email = str(email or "").strip().lower()
 
-        debug_logger.log_info(f"[ADD_TOKEN] Converting ST to AT...")
-        try:
-            result = await self.flow_client.st_to_at(st)
-            at = result["access_token"]
-            expires = result.get("expires")
-            user_info = result.get("user", {})
-            email = user_info.get("email", "")
-            name = user_info.get("name", email.split("@")[0] if email else "")
-            at_expires = None
-            if expires:
-                try:
-                    at_expires = datetime.fromisoformat(expires.replace('Z', '+00:00'))
-                except Exception:
-                    pass
-        except Exception as e:
-            raise ValueError(f"ST?AT??: {str(e)}")
+        if normalized_st:
+            existing_token = await self.db.get_token_by_st(normalized_st)
+            if existing_token:
+                raise ValueError(f"账号已存在: {existing_token.email}")
+        if normalized_email:
+            existing_email_token = await self.db.get_token_by_email(normalized_email)
+            if existing_email_token:
+                raise ValueError(f"账号已存在: {existing_email_token.email}")
 
-        try:
-            credits_result = await self.flow_client.get_credits(at)
-            credits = credits_result.get("credits", 0)
-            user_paygate_tier = credits_result.get("userPaygateTier")
-        except Exception:
-            credits = 0
-            user_paygate_tier = None
+        at = None
+        at_expires = None
+        credits = 0
+        user_paygate_tier = None
+        resolved_email = normalized_email
+        name = normalized_email.split("@")[0] if normalized_email else ""
+
+        if normalized_st:
+            debug_logger.log_info("[ADD_TOKEN] Converting ST to AT...")
+            try:
+                result = await self.flow_client.st_to_at(normalized_st)
+                at = result["access_token"]
+                expires = result.get("expires")
+                user_info = result.get("user", {})
+                resolved_email = str(user_info.get("email") or resolved_email or "").strip().lower()
+                name = user_info.get("name", resolved_email.split("@")[0] if resolved_email else "")
+                if expires:
+                    try:
+                        at_expires = datetime.fromisoformat(expires.replace('Z', '+00:00'))
+                    except Exception:
+                        pass
+            except Exception as e:
+                raise ValueError(f"ST 转 AT 失败: {str(e)}")
+
+            try:
+                credits_result = await self.flow_client.get_credits(at)
+                credits = credits_result.get("credits", 0)
+                user_paygate_tier = credits_result.get("userPaygateTier")
+            except Exception:
+                credits = 0
+                user_paygate_tier = None
+        elif not resolved_email:
+            raise ValueError("新增账号时必须提供邮箱，或提供可转换的 ST")
 
         base_project_name = self._normalize_project_name_base(project_name)
         project_pool_size = self._get_project_pool_size()
@@ -255,10 +337,10 @@ class TokenManager:
                 project_name=first_project_name,
                 tool_name="PINHOLE"
             ))
-        else:
+        elif normalized_st:
             try:
                 first_project_name = self._build_project_name(1, base_project_name)
-                first_project_id = await self.flow_client.create_project(st, first_project_name)
+                first_project_id = await self.flow_client.create_project(normalized_st, first_project_name)
                 debug_logger.log_info(f"[ADD_TOKEN] Created pooled project #1: {first_project_name} (ID: {first_project_id})")
                 pooled_projects.append(Project(
                     project_id=first_project_id,
@@ -267,20 +349,20 @@ class TokenManager:
                     tool_name="PINHOLE"
                 ))
             except Exception as e:
-                raise ValueError(f"??????: {str(e)}")
+                raise ValueError(f"创建初始项目失败: {str(e)}")
 
         token = Token(
-            st=st,
+            st=normalized_st or None,
             at=at,
             at_expires=at_expires,
-            email=email,
+            email=resolved_email,
             name=name,
             remark=remark,
             is_active=True,
             credits=credits,
             user_paygate_tier=user_paygate_tier,
-            current_project_id=pooled_projects[0].project_id,
-            current_project_name=pooled_projects[0].project_name,
+            current_project_id=pooled_projects[0].project_id if pooled_projects else project_id,
+            current_project_name=pooled_projects[0].project_name if pooled_projects else project_name,
             image_enabled=image_enabled,
             video_enabled=video_enabled,
             image_concurrency=image_concurrency,
@@ -292,21 +374,24 @@ class TokenManager:
         token_id = await self.db.add_token(token)
         token.id = token_id
 
-        pooled_projects[0].token_id = token_id
-        pooled_projects[0].id = await self.db.add_project(pooled_projects[0])
+        if pooled_projects:
+            pooled_projects[0].token_id = token_id
+            pooled_projects[0].id = await self.db.add_project(pooled_projects[0])
 
-        while len(pooled_projects) < project_pool_size:
-            new_project = await self._create_project_for_token(token, len(pooled_projects) + 1, base_project_name)
-            pooled_projects.append(new_project)
+            while len(pooled_projects) < project_pool_size:
+                new_project = await self._create_project_for_token(token, len(pooled_projects) + 1, base_project_name)
+                pooled_projects.append(new_project)
 
         debug_logger.log_info(
-            f"[ADD_TOKEN] Token added successfully (ID: {token_id}, Email: {email}, pooled_projects={len(pooled_projects)})"
+            f"[ADD_TOKEN] Account added successfully (ID: {token_id}, Email: {resolved_email}, "
+            f"pooled_projects={len(pooled_projects)}, has_st={bool(normalized_st)})"
         )
         return token
     async def update_token(
         self,
         token_id: int,
         st: Optional[str] = None,
+        cookie: Optional[str] = None,
         at: Optional[str] = None,
         at_expires: Optional[datetime] = None,
         project_id: Optional[str] = None,
@@ -327,6 +412,8 @@ class TokenManager:
 
         if st is not None:
             update_fields["st"] = st
+        if cookie is not None:
+            update_fields["cookie"] = cookie
         if at is not None:
             update_fields["at"] = at
         if at_expires is not None:
@@ -446,9 +533,15 @@ class TokenManager:
             if not token:
                 return False
 
-            result = await self._do_refresh_at(token_id, token.st)
-            if result:
-                return True
+            normalized_st = str(getattr(token, "st", "") or "").strip()
+            if not normalized_st:
+                debug_logger.log_info(
+                    f"[AT_REFRESH] Token {token_id}: no ST available yet, skip AT refresh for browser-backed shell account"
+                )
+            else:
+                result = await self._do_refresh_at(token_id, normalized_st)
+                if result:
+                    return True
 
             debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: first AT refresh failed, trying ST refresh...")
             new_st = await self._try_refresh_st(token_id, token)
@@ -458,8 +551,19 @@ class TokenManager:
                 if result:
                     return True
 
+            if config.captcha_method == "extension":
+                debug_logger.log_warning(
+                    f"[AT_REFRESH] Token {token_id}: all refresh attempts failed under extension mode; keep token active"
+                )
+                return False
+
             debug_logger.log_error(f"[AT_REFRESH] Token {token_id}: all refresh attempts failed, disabling token")
-            await self.disable_token(token_id)
+            await self.db.update_token(
+                token_id,
+                is_active=False,
+                ban_reason=self.AT_REFRESH_FAILED_BAN_REASON,
+                banned_at=datetime.now(timezone.utc),
+            )
             return False
 
     async def _refresh_at(self, token_id: int) -> bool:
@@ -506,12 +610,22 @@ class TokenManager:
                 except:
                     pass
 
-            # 更新数据库
-            await self.db.update_token(
-                token_id,
-                at=new_at,
-                at_expires=new_at_expires
-            )
+            # AT 刷新成功后，顺带清理历史的 AT 刷新失败禁用状态。
+            current_token = await self.db.get_token(token_id)
+            update_fields = {
+                "at": new_at,
+                "at_expires": new_at_expires,
+            }
+            if current_token and str(getattr(current_token, "ban_reason", "") or "").strip() == self.AT_REFRESH_FAILED_BAN_REASON:
+                update_fields.update(
+                    {
+                        "is_active": True,
+                        "ban_reason": None,
+                        "banned_at": None,
+                    }
+                )
+
+            await self.db.update_token(token_id, **update_fields)
 
             debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: AT刷新成功")
             debug_logger.log_info(f"  - 新过期时间: {new_at_expires}")
@@ -545,6 +659,141 @@ class TokenManager:
             record_token_refresh("at", "failure")
             return False
 
+    async def _build_extension_runtime_snapshot(self, token: Token) -> dict:
+        route_key = str(getattr(token, "extension_route_key", "") or "").strip()
+        profile = await self.db.get_browser_profile_by_token_id(int(token.id))
+        profile_id = str(getattr(profile, "profile_id", "") or "").strip() if profile else ""
+        slots = await self.db.list_worker_slots()
+
+        matched_slot = None
+        for slot in slots:
+            if route_key and str(slot.get("route_key") or "").strip() == route_key:
+                matched_slot = slot
+                break
+        if matched_slot is None and profile_id:
+            for slot in slots:
+                if str(slot.get("profile_id") or "").strip() == profile_id:
+                    matched_slot = slot
+                    break
+
+        return {
+            "route_key": route_key,
+            "profile_id": profile_id,
+            "browser_online": bool(matched_slot),
+            "slot_id": str(matched_slot.get("slot_id") or "").strip() if matched_slot else "",
+            "current_email": str(matched_slot.get("current_email") or "").strip() if matched_slot else "",
+            "current_project_id": str(matched_slot.get("project_id") or "").strip() if matched_slot else "",
+            "session_state": str(matched_slot.get("session_state") or "").strip() if matched_slot else "",
+            "page_url": str(matched_slot.get("page_url") or "").strip() if matched_slot else "",
+        }
+
+    async def _try_refresh_st_from_extension_browser(self, token_id: int, token: Token) -> Optional[str]:
+        browser_sync = {
+            "attempted": False,
+            "success": False,
+            "cookie_count": 0,
+            "session_token_present": False,
+            "current_email": "",
+            "error": "",
+        }
+        try:
+            from .browser_profile_runtime import sync_extension_worker_views
+            from .browser_captcha_extension import ExtensionCaptchaService
+
+            await sync_extension_worker_views(self.db)
+            runtime = await self._build_extension_runtime_snapshot(token)
+            browser_sync["current_email"] = str(runtime.get("current_email") or "").strip()
+            if not runtime.get("browser_online"):
+                debug_logger.log_info(
+                    f"[ST_REFRESH] Token {token_id}: extension browser offline, skip browser credential sync"
+                )
+                return None
+
+            runtime_email = str(runtime.get("current_email") or "").strip()
+            token_email = str(getattr(token, "email", "") or "").strip()
+            if not runtime_email:
+                debug_logger.log_info(
+                    f"[ST_REFRESH] Token {token_id}: extension browser online but no logged-in email detected"
+                )
+                return None
+            if token_email and runtime_email != token_email:
+                debug_logger.log_warning(
+                    f"[ST_REFRESH] Token {token_id}: extension browser email mismatch runtime={runtime_email} token={token_email}"
+                )
+                return None
+
+            browser_sync["attempted"] = True
+            service = await ExtensionCaptchaService.get_instance(self.db)
+            ok, route_key, reason, snapshot = await service.validate_connection_for_token(token_id)
+            if not ok:
+                debug_logger.log_info(
+                    f"[ST_REFRESH] Token {token_id}: extension route not ready for browser credential sync: {reason}"
+                )
+                return None
+
+            browser_job = await service.dispatch_ui_job(
+                token_id=token_id,
+                job_type="account_credential_probe",
+                project_id=str(getattr(token, "current_project_id", "") or "").strip() or None,
+                payload={"activate_tab": False},
+                timeout=45,
+            )
+            ui_state = (
+                ((browser_job or {}).get("result") or {}).get("ui_state")
+                if isinstance((browser_job or {}).get("result"), dict)
+                else {}
+            ) or {}
+            cookie_items = ui_state.get("cookie_items") if isinstance(ui_state, dict) else None
+            cookie_count = len(cookie_items) if isinstance(cookie_items, list) else 0
+            browser_sync["cookie_count"] = cookie_count
+            browser_sync["current_email"] = (
+                str(ui_state.get("current_email") or snapshot.get("current_email") or "").strip()
+                if isinstance(snapshot, dict)
+                else str(ui_state.get("current_email") or "").strip()
+            )
+            browser_sync["session_token_present"] = bool(
+                ui_state.get("session_token_present") if isinstance(ui_state, dict) else False
+            )
+            runtime_email = str(browser_sync.get("current_email") or "").strip()
+            if token_email and runtime_email and runtime_email != token_email:
+                debug_logger.log_warning(
+                    f"[ST_REFRESH] Token {token_id}: extension probe email mismatch runtime={runtime_email} token={token_email}"
+                )
+                return None
+            if cookie_count <= 0:
+                debug_logger.log_info(
+                    f"[ST_REFRESH] Token {token_id}: extension browser returned no cookies during credential probe"
+                )
+                return None
+
+            browser_derived_st = extract_session_token_from_cookie_payload(cookie_items)
+            merged_cookie = merge_browser_cookie_payloads_prefer_live_session(
+                getattr(token, "cookie", None),
+                cookie_items,
+            )
+            normalized_cookie = normalize_cookie_storage_text(merged_cookie)
+            derived_st = browser_derived_st or extract_session_token_from_cookie_payload(normalized_cookie)
+            if not derived_st:
+                debug_logger.log_info(
+                    f"[ST_REFRESH] Token {token_id}: extension browser returned cookies but no session token"
+                )
+                return None
+
+            await self.db.update_token(
+                token_id,
+                cookie=normalized_cookie,
+                st=derived_st,
+            )
+            debug_logger.log_info(
+                f"[ST_REFRESH] Token {token_id}: extension browser credential sync succeeded "
+                f"(route_key={route_key or '-'}, cookie_count={cookie_count}, session_token_present={bool(derived_st)})"
+            )
+            record_token_refresh("st", "success")
+            return derived_st
+        except Exception as e:
+            debug_logger.log_warning(f"[ST_REFRESH] Token {token_id}: extension browser credential sync failed - {str(e)}")
+            return None
+
     async def _try_refresh_st(self, token_id: int, token) -> Optional[str]:
         """尝试通过浏览器刷新 Session Token
 
@@ -558,7 +807,8 @@ class TokenManager:
             新的 ST 字符串，如果失败返回 None
         """
         try:
-            from ..core.config import config
+            if config.captcha_method == "extension":
+                return await self._try_refresh_st_from_extension_browser(token_id, token)
 
             # 仅在 personal 模式下支持 ST 自动刷新
             if config.captcha_method != "personal":
@@ -577,9 +827,24 @@ class TokenManager:
             refresh_timeout_seconds = 45.0
             try:
                 new_st = await asyncio.wait_for(
-                    service.refresh_session_token(token.current_project_id),
+                    service.refresh_session_token(
+                        token.current_project_id,
+                        token_id=token_id,
+                    ),
                     timeout=refresh_timeout_seconds,
                 )
+                if (not new_st or new_st == token.st) and self.db:
+                    cookie_derived_st = ""
+                    latest_cookie_length = 0
+                    try:
+                        latest_token = await self.db.get_token(token_id)
+                        latest_cookie = getattr(latest_token, "cookie", None) if latest_token else None
+                        latest_cookie_length = len(str(latest_cookie or ""))
+                        cookie_derived_st = extract_session_token_from_cookie_payload(latest_cookie)
+                    except Exception:
+                        cookie_derived_st = ""
+                    if cookie_derived_st and cookie_derived_st != token.st:
+                        new_st = cookie_derived_st
             except asyncio.TimeoutError:
                 debug_logger.log_error(
                     f"[ST_REFRESH] Token {token_id}: 刷新 ST 超时 ({refresh_timeout_seconds:.0f}s)"
@@ -616,7 +881,7 @@ class TokenManager:
         async with project_lock:
             token = await self.db.get_token(token_id)
             if not token:
-                raise ValueError("Token not found")
+                raise ValueError("账号不存在")
 
             projects = [project for project in await self.db.get_projects_by_token(token_id) if project.is_active]
             projects = self._sort_projects(projects)
@@ -670,6 +935,96 @@ class TokenManager:
         Note: today_error_count and historical statistics are NOT reset.
         """
         await self.db.reset_error_count(token_id)
+
+    def _automation_cooldown_minutes_for_score(self, score: int) -> int:
+        if score <= 1:
+            return 30
+        if score == 2:
+            return 180
+        return 720
+
+    async def mark_automation_risk(self, token_id: int, reason: str, score_delta: int = 1) -> Optional[dict]:
+        """Mark a token as automation-sensitive without fully disabling the account."""
+        token = await self.db.get_token(token_id)
+        if not token:
+            return None
+
+        now = datetime.now(timezone.utc)
+        current_score = max(0, int(token.automation_risk_score or 0))
+        delta = max(1, int(score_delta or 1))
+        next_score = min(10, current_score + delta)
+
+        next_state = "cooldown"
+        cooldown_until = now + timedelta(minutes=self._automation_cooldown_minutes_for_score(next_score))
+
+        detail = str(reason or "").strip() or "automation_risk"
+        await self.db.update_token(
+            token_id,
+            automation_risk_score=next_score,
+            automation_risk_state=next_state,
+            automation_cooldown_until=cooldown_until,
+            automation_last_risk_reason=detail[:300],
+            automation_last_risk_at=now,
+        )
+        return {
+            "token_id": token_id,
+            "automation_risk_score": next_score,
+            "automation_risk_state": next_state,
+            "automation_cooldown_until": cooldown_until,
+            "automation_last_risk_reason": detail[:300],
+        }
+
+    async def record_automation_success(self, token_id: int) -> Optional[dict]:
+        """Decay automation risk after a confirmed successful automated run."""
+        token = await self.db.get_token(token_id)
+        if not token:
+            return None
+
+        current_score = max(0, int(token.automation_risk_score or 0))
+        if current_score <= 0 and str(token.automation_risk_state or "healthy") == "healthy":
+            return {
+                "token_id": token_id,
+                "automation_risk_score": 0,
+                "automation_risk_state": "healthy",
+            }
+
+        next_score = max(0, current_score - 1)
+        next_state = "healthy" if next_score == 0 else "sensitive"
+        await self.db.update_token(
+            token_id,
+            automation_risk_score=next_score,
+            automation_risk_state=next_state,
+            automation_cooldown_until=None,
+            automation_last_risk_reason=None if next_score == 0 else token.automation_last_risk_reason,
+        )
+        return {
+            "token_id": token_id,
+            "automation_risk_score": next_score,
+            "automation_risk_state": next_state,
+        }
+
+    async def clear_automation_risk(self, token_id: int) -> Optional[dict]:
+        """Manually clear automation cooldown/block state for admin override."""
+        token = await self.db.get_token(token_id)
+        if not token:
+            return None
+
+        await self.db.update_token(
+            token_id,
+            automation_risk_score=0,
+            automation_risk_state="healthy",
+            automation_cooldown_until=None,
+            automation_last_risk_reason=None,
+            automation_last_risk_at=None,
+        )
+        return {
+            "token_id": token_id,
+            "automation_risk_score": 0,
+            "automation_risk_state": "healthy",
+            "automation_cooldown_until": None,
+            "automation_last_risk_reason": None,
+            "automation_last_risk_at": None,
+        }
 
     async def ban_token_for_429(self, token_id: int):
         """因429错误立即禁用token
@@ -728,12 +1083,14 @@ class TokenManager:
             else:
                 banned_at_aware = token.banned_at
 
-            # 检查是否已过12小时
+            auto_unban_hours = max(1, int(config.rate_limit_auto_unban_hours))
+
+            # 检查是否已过配置的自动解禁时长
             time_since_ban = now - banned_at_aware
-            if time_since_ban.total_seconds() >= 12 * 3600:  # 12小时
+            if time_since_ban.total_seconds() >= auto_unban_hours * 3600:
                 debug_logger.log_info(
                     f"[AUTO_UNBAN] 解禁Token {token.id} (禁用时间: {banned_at_aware}, "
-                    f"已过 {time_since_ban.total_seconds() / 3600:.1f} 小时)"
+                    f"已过 {time_since_ban.total_seconds() / 3600:.1f} 小时, 阈值={auto_unban_hours} 小时)"
                 )
                 await self.db.update_token(
                     token.id,
@@ -747,7 +1104,7 @@ class TokenManager:
     # ========== 余额刷新 ==========
 
     async def refresh_credits(self, token_id: int) -> int:
-        """刷新Token余额
+        """刷新账号余额
 
         Returns:
             credits
@@ -763,17 +1120,126 @@ class TokenManager:
 
         try:
             result = await self.flow_client.get_credits(token.at)
-            credits = result.get("credits", 0)
+            credits = self._normalize_credits_value(result.get("credits", 0))
             user_paygate_tier = result.get("userPaygateTier")
 
-            # 更新数据库
-            await self.db.update_token(
-                token_id,
-                credits=credits,
-                user_paygate_tier=user_paygate_tier,
-            )
+            await self._apply_credit_state_after_refresh(token, credits, user_paygate_tier)
 
             return credits
         except Exception as e:
             debug_logger.log_error(f"Failed to refresh credits for token {token_id}: {str(e)}")
             return 0
+
+    async def _get_credit_refresh_candidates(self) -> List[Token]:
+        """获取需要参与余额刷新的账号。
+
+        包括：
+        - 当前活跃账号
+        - 因余额耗尽被自动停用的账号（用于充值后自动召回）
+        """
+        candidates: dict[int, Token] = {}
+        for token in await self.get_active_tokens():
+            has_st = bool(str(getattr(token, "st", "") or "").strip())
+            has_at = bool(str(getattr(token, "at", "") or "").strip())
+            if token.id is not None and (has_st or has_at):
+                candidates[token.id] = token
+
+        for token in await self.get_all_tokens():
+            if (
+                token.id is not None
+                and token.ban_reason == self.CREDIT_EXHAUSTED_BAN_REASON
+                and not token.is_active
+                and (
+                    bool(str(getattr(token, "st", "") or "").strip())
+                    or bool(str(getattr(token, "at", "") or "").strip())
+                )
+            ):
+                candidates[token.id] = token
+
+        return list(candidates.values())
+
+    async def refresh_active_tokens_credits(self) -> dict:
+        """批量刷新活跃账号余额和已因余额耗尽停用的账号余额。
+
+        Returns:
+            {
+                "total": int,
+                "success": int,
+                "failed": int,
+                "disabled": int,
+                "reactivated": int,
+                "tokens": list[dict],
+            }
+        """
+        active_tokens = await self._get_credit_refresh_candidates()
+        summary = {
+            "total": len(active_tokens),
+            "success": 0,
+            "failed": 0,
+            "disabled": 0,
+            "reactivated": 0,
+            "tokens": [],
+        }
+
+        for token in active_tokens:
+            token_id = token.id
+            if token_id is None:
+                continue
+
+            previous_credits = 0
+            try:
+                previous_credits = int(token.credits or 0)
+            except Exception:
+                previous_credits = 0
+            previous_is_active = bool(token.is_active)
+            previous_ban_reason = token.ban_reason
+
+            try:
+                refreshed_token = await self.ensure_valid_token(token)
+                if not refreshed_token:
+                    raise RuntimeError("token invalid after refresh check")
+
+                result = await self.flow_client.get_credits(refreshed_token.at)
+                credits = self._normalize_credits_value(result.get("credits", 0))
+                user_paygate_tier = result.get("userPaygateTier")
+                state_result = await self._apply_credit_state_after_refresh(
+                    refreshed_token,
+                    credits,
+                    user_paygate_tier,
+                )
+
+                auto_disabled = state_result["auto_disabled"]
+                reactivated = state_result["reactivated"]
+                if auto_disabled and (previous_is_active or previous_ban_reason != self.CREDIT_EXHAUSTED_BAN_REASON):
+                    summary["disabled"] += 1
+                if reactivated:
+                    summary["reactivated"] += 1
+
+                summary["success"] += 1
+                summary["tokens"].append(
+                    {
+                        "token_id": token_id,
+                        "email": refreshed_token.email,
+                        "credits": credits,
+                        "previous_credits": previous_credits,
+                        "auto_disabled": auto_disabled,
+                        "reactivated": reactivated,
+                    }
+                )
+            except Exception as exc:
+                summary["failed"] += 1
+                summary["tokens"].append(
+                    {
+                        "token_id": token_id,
+                        "email": token.email,
+                        "credits": previous_credits,
+                        "previous_credits": previous_credits,
+                        "reactivated": False,
+                        "error": str(exc),
+                    }
+                )
+                debug_logger.log_error(
+                    f"[CREDITS_REFRESH] Failed to refresh credits for token {token_id}: {exc}"
+                )
+
+        return summary

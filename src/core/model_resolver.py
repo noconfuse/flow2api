@@ -192,6 +192,50 @@ VIDEO_BASE_MODELS = {
         "landscape": "veo_3_1_t2v_lite_6s_landscape",
         "portrait": "veo_3_1_t2v_lite_6s_portrait",
     },
+    "omni-flash-t2v": {
+        "landscape": "omni-flash-t2v_landscape",
+        "portrait": "omni-flash-t2v_portrait",
+    },
+    "omni-flash-t2v_4s": {
+        "landscape": "omni-flash-t2v_landscape_4s",
+        "portrait": "omni-flash-t2v_portrait_4s",
+    },
+    "omni-flash-t2v_6s": {
+        "landscape": "omni-flash-t2v_landscape_6s",
+        "portrait": "omni-flash-t2v_portrait_6s",
+    },
+    "omni-flash-t2v_8s": {
+        "landscape": "omni-flash-t2v_landscape_8s",
+        "portrait": "omni-flash-t2v_portrait_8s",
+    },
+    "omni-flash-t2v_10s": {
+        "landscape": "omni-flash-t2v_landscape_10s",
+        "portrait": "omni-flash-t2v_portrait_10s",
+    },
+    "omni-flash-edit": {
+        "landscape": "omni-flash-edit_landscape",
+        "portrait": "omni-flash-edit_portrait",
+    },
+    "omni-flash-r2v": {
+        "landscape": "omni-flash-r2v_landscape",
+        "portrait": "omni-flash-r2v_portrait",
+    },
+    "omni-flash-r2v_8s": {
+        "landscape": "omni-flash-r2v_landscape_8s",
+        "portrait": "omni-flash-r2v_portrait_8s",
+    },
+    "omni-flash-r2v_4s": {
+        "landscape": "omni-flash-r2v_landscape_4s",
+        "portrait": "omni-flash-r2v_portrait_4s",
+    },
+    "omni-flash-r2v_6s": {
+        "landscape": "omni-flash-r2v_landscape_6s",
+        "portrait": "omni-flash-r2v_portrait_6s",
+    },
+    "omni-flash-r2v_10s": {
+        "landscape": "omni-flash-r2v_landscape_10s",
+        "portrait": "omni-flash-r2v_portrait_10s",
+    },
     # I2V models
     "veo_3_1_i2v_s_fast_fl": {
         "landscape": "veo_3_1_i2v_s_fast_fl",

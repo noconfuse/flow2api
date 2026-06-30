@@ -21,6 +21,7 @@ from ..core.models import (
     GeminiContent,
     GeminiGenerateContentRequest,
 )
+from ..core.video_reference import parse_video_edit_uri
 from ..services.generation_handler import MODEL_CONFIG, GenerationHandler
 from ..services.browser_captcha_extension import ExtensionCaptchaService
 
@@ -80,6 +81,11 @@ class NormalizedGenerationRequest:
     images: List[bytes]
     messages: Optional[List[ChatMessage]] = None
     video_media_id: Optional[str] = None
+    video_edit_params: Optional[Dict[str, Any]] = None
+    preferred_token_id: Optional[int] = None
+    preferred_project_id: Optional[str] = None
+    source_image_media_ids: Optional[List[str]] = None
+    source_image_selected_material_index: Optional[int] = None
 
 
 def set_generation_handler(handler: GenerationHandler):
@@ -286,13 +292,21 @@ def _sanitize_media_prompt(prompt: str) -> str:
     return sanitized.strip()
 
 
+def _parse_video_edit_uri(uri: str) -> Dict[str, Any]:
+    """Wrap shared parser with HTTP-friendly errors."""
+    try:
+        return parse_video_edit_uri(uri)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 async def _extract_prompt_and_images_from_openai_messages(
     messages: List[ChatMessage],
-) -> tuple[str, List[bytes], Optional[str]]:
-    """Extract prompt, images, and optional video_media_id from messages.
+) -> tuple[str, List[bytes], Optional[str], Optional[Dict[str, Any]]]:
+    """Extract prompt, images, optional video_media_id, and optional video_edit_params.
 
     Returns:
-        (prompt, images, video_media_id)
+        (prompt, images, video_media_id, video_edit_params)
         video_media_id is set when an image_url starts with "extend://"
     """
     last_message = messages[-1]
@@ -300,6 +314,7 @@ async def _extract_prompt_and_images_from_openai_messages(
     prompt_parts: List[str] = []
     images: List[bytes] = []
     video_media_id: Optional[str] = None
+    video_edit_params: Optional[Dict[str, Any]] = None
 
     if isinstance(content, str):
         prompt_parts.append(content)
@@ -314,12 +329,20 @@ async def _extract_prompt_and_images_from_openai_messages(
                 image_url = item.get("image_url", {}).get("url", "")
                 # extend://MEDIA_ID 用于视频续写
                 if image_url.startswith("extend://"):
+                    if video_edit_params:
+                        raise HTTPException(status_code=400, detail="不能同时传入 extend:// 和 edit://")
                     video_media_id = image_url[len("extend://"):]
+                elif image_url.startswith("edit://"):
+                    if video_media_id:
+                        raise HTTPException(status_code=400, detail="不能同时传入 extend:// 和 edit://")
+                    if video_edit_params:
+                        raise HTTPException(status_code=400, detail="一次请求只支持一个 edit:// 引用")
+                    video_edit_params = _parse_video_edit_uri(image_url)
                 else:
                     images.append(await _load_image_bytes_from_uri(image_url))
 
     prompt = "\n".join(part for part in prompt_parts if part).strip()
-    return prompt, images, video_media_id
+    return prompt, images, video_media_id, video_edit_params
 
 
 async def _append_openai_reference_images(
@@ -424,7 +447,7 @@ async def _normalize_openai_request(
     request: ChatCompletionRequest,
 ) -> NormalizedGenerationRequest:
     if request.messages:
-        prompt, images, video_media_id = await _extract_prompt_and_images_from_openai_messages(
+        prompt, images, video_media_id, video_edit_params = await _extract_prompt_and_images_from_openai_messages(
             request.messages
         )
         if request.image and not images:
@@ -437,6 +460,11 @@ async def _normalize_openai_request(
             images=images,
             messages=request.messages,
             video_media_id=video_media_id,
+            video_edit_params=video_edit_params,
+            preferred_token_id=request.preferred_token_id,
+            preferred_project_id=request.preferred_project_id,
+            source_image_media_ids=request.source_image_media_ids,
+            source_image_selected_material_index=request.source_image_selected_material_index,
         )
 
     if request.contents:
@@ -478,6 +506,10 @@ async def _normalize_gemini_request(
         model=resolved_model,
         prompt=prompt,
         images=images,
+        preferred_token_id=request.preferred_token_id,
+        preferred_project_id=request.preferred_project_id,
+        source_image_media_ids=request.source_image_media_ids,
+        source_image_selected_material_index=request.source_image_selected_material_index,
     )
 
 
@@ -487,6 +519,11 @@ async def _collect_non_stream_result(
     images: List[bytes],
     base_url_override: Optional[str] = None,
     video_media_id: Optional[str] = None,
+    video_edit_params: Optional[Dict[str, Any]] = None,
+    preferred_token_id: Optional[int] = None,
+    preferred_project_id: Optional[str] = None,
+    source_image_media_ids: Optional[List[str]] = None,
+    source_image_selected_material_index: Optional[int] = None,
 ) -> str:
     handler = _ensure_generation_handler()
     result = None
@@ -497,6 +534,11 @@ async def _collect_non_stream_result(
         stream=False,
         base_url_override=base_url_override,
         video_media_id=video_media_id,
+        video_edit_params=video_edit_params,
+        preferred_token_id=preferred_token_id,
+        preferred_project_id=preferred_project_id,
+        source_image_media_ids=source_image_media_ids,
+        source_image_selected_material_index=source_image_selected_material_index,
     ):
         result = chunk
 
@@ -726,6 +768,11 @@ async def _iterate_openai_stream(
         stream=True,
         base_url_override=base_url_override,
         video_media_id=normalized.video_media_id,
+        video_edit_params=normalized.video_edit_params,
+        preferred_token_id=normalized.preferred_token_id,
+        preferred_project_id=normalized.preferred_project_id,
+        source_image_media_ids=normalized.source_image_media_ids,
+        source_image_selected_material_index=normalized.source_image_selected_material_index,
     ):
         if chunk.startswith("data: "):
             yield chunk
@@ -750,6 +797,11 @@ async def _iterate_gemini_stream(
         stream=True,
         base_url_override=base_url_override,
         video_media_id=normalized.video_media_id,
+        video_edit_params=normalized.video_edit_params,
+        preferred_token_id=normalized.preferred_token_id,
+        preferred_project_id=normalized.preferred_project_id,
+        source_image_media_ids=normalized.source_image_media_ids,
+        source_image_selected_material_index=normalized.source_image_selected_material_index,
     ):
         if chunk.startswith("data: "):
             payload_text = chunk[6:].strip()
@@ -879,6 +931,11 @@ async def create_chat_completion(
                 normalized.images,
                 base_url_override=request_base_url,
                 video_media_id=normalized.video_media_id,
+                video_edit_params=normalized.video_edit_params,
+                preferred_token_id=normalized.preferred_token_id,
+            preferred_project_id=normalized.preferred_project_id,
+            source_image_media_ids=normalized.source_image_media_ids,
+            source_image_selected_material_index=normalized.source_image_selected_material_index,
             )
         )
         return _build_openai_json_response(payload)
@@ -913,6 +970,11 @@ async def generate_content(
                     normalized.images,
                     base_url_override=request_base_url,
                     video_media_id=normalized.video_media_id,
+                    video_edit_params=normalized.video_edit_params,
+                    preferred_token_id=normalized.preferred_token_id,
+        preferred_project_id=normalized.preferred_project_id,
+        source_image_media_ids=normalized.source_image_media_ids,
+        source_image_selected_material_index=normalized.source_image_selected_material_index,
                 )
             )
         )
@@ -975,6 +1037,7 @@ async def stream_generate_content(
 @router.websocket("/captcha_ws")
 async def captcha_websocket_endpoint(websocket: WebSocket):
     from ..core.logger import debug_logger
+
     api_key = (
         websocket.query_params.get("key")
         or websocket.query_params.get("api_key")
@@ -989,8 +1052,12 @@ async def captcha_websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=1008)
         return
 
-    service = await ExtensionCaptchaService.get_instance()
-    await service.connect(websocket)
+    from ..main import db
+
+    service = await ExtensionCaptchaService.get_instance(db)
+    accepted = await service.connect(websocket)
+    if not accepted:
+        return
     try:
         while True:
             data = await websocket.receive_text()

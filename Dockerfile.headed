@@ -9,13 +9,20 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PERSONAL_BROWSER_HEADLESS=0 \
     PLAYWRIGHT_BROWSERS_PATH=0
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+RUN set -eux; \
+    find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -exec \
+      sed -i \
+        -e 's|http://deb.debian.org|https://deb.debian.org|g' \
+        -e 's|http://security.debian.org|https://security.debian.org|g' \
+      {} +; \
+    apt-get update -o Acquire::Retries=5; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
         fluxbox \
         x11-utils \
         xauth \
-        xvfb \
-    && rm -rf /var/lib/apt/lists/*
+        xvfb; \
+    rm -rf /var/lib/apt/lists/*
 
 # 在镜像构建阶段预装 Playwright Chromium，供 personal/browser 模式复用
 COPY requirements.txt ./
@@ -24,6 +31,8 @@ RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.txt \
     && python -m playwright install --with-deps chromium
 
 COPY . .
+RUN find /app -type d -name '__pycache__' -prune -exec rm -rf {} + \
+    && find /app -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 COPY docker/entrypoint.headed.sh /usr/local/bin/entrypoint.headed.sh
 RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.headed.sh && chmod +x /usr/local/bin/entrypoint.headed.sh
 

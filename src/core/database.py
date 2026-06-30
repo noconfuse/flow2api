@@ -7,7 +7,26 @@ from datetime import date, datetime
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from .config import DEFAULT_YESCAPTCHA_TASK_TYPE, normalize_yescaptcha_task_type
-from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, GenerationConfig, CacheConfig, Project, CaptchaConfig, PluginConfig, CallLogicConfig
+from .logger import debug_logger
+from .models import (
+    AdminConfig,
+    BrowserProfile,
+    CacheConfig,
+    CallLogicConfig,
+    CaptchaConfig,
+    GenerationConfig,
+    PluginConfig,
+    Project,
+    ProxyConfig,
+    RequestLog,
+    SchedulerConfig,
+    Task,
+    Token,
+    TokenStats,
+    WorkerJob,
+    WorkerNode,
+    WorkerSlot,
+)
 
 
 class Database:
@@ -32,10 +51,42 @@ class Database:
         """Apply SQLite runtime settings for better concurrent behavior."""
         await db.execute(f"PRAGMA busy_timeout = {self._busy_timeout_ms}")
         await db.execute("PRAGMA foreign_keys = ON")
+        # Tolerate legacy/corrupted TEXT rows so admin reads do not fail hard.
+        db.text_factory = lambda b: b.decode("utf-8", errors="replace") if isinstance(b, (bytes, bytearray)) else str(b)
 
     def _current_stats_date(self) -> str:
         """Return the logical date used by daily token statistics."""
         return date.today().isoformat()
+
+    def _normalize_token_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        """Best-effort sanitize token rows so one corrupted record does not break all reads."""
+        normalized = dict(row or {})
+        datetime_fields = (
+            "at_expires",
+            "created_at",
+            "last_used_at",
+            "banned_at",
+            "automation_cooldown_until",
+            "automation_last_risk_at",
+        )
+
+        for field in datetime_fields:
+            value = normalized.get(field)
+            if value is None or isinstance(value, datetime):
+                continue
+            text = str(value).strip()
+            if not text:
+                normalized[field] = None
+                continue
+            try:
+                normalized[field] = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except Exception:
+                normalized[field] = None
+
+        return normalized
+
+    def _token_from_row(self, row: Any) -> Token:
+        return Token(**self._normalize_token_row(dict(row)))
 
     @asynccontextmanager
     async def _connect(self, *, write: bool = False):
@@ -68,6 +119,494 @@ class Database:
             return any(col[1] == column_name for col in columns)
         except:
             return False
+
+    async def _dedupe_token_stats(self, db) -> None:
+        """Ensure token_stats keeps only the latest row for each token_id."""
+        if not await self._table_exists(db, "token_stats"):
+            return
+        cursor = await db.execute("""
+            SELECT token_id, MAX(id) AS keep_id, COUNT(*) AS row_count
+            FROM token_stats
+            GROUP BY token_id
+            HAVING COUNT(*) > 1
+        """)
+        duplicate_rows = await cursor.fetchall()
+        if not duplicate_rows:
+            return
+
+        for row in duplicate_rows:
+            await db.execute(
+                "DELETE FROM token_stats WHERE token_id = ? AND id <> ?",
+                (row[0], row[1]),
+            )
+        print(f"  ✓ Deduplicated token_stats rows for {len(duplicate_rows)} token(s)")
+
+    async def _migrate_tokens_table_allow_nullable_st(self, db):
+        """Rebuild legacy tokens table so `st` can be NULL."""
+        try:
+            cursor = await db.execute("PRAGMA table_info(tokens)")
+            columns = await cursor.fetchall()
+        except Exception:
+            return
+
+        st_column = next((col for col in columns if col[1] == "st"), None)
+        if not st_column or int(st_column[3] or 0) == 0:
+            return
+
+        print("  ✓ Rebuilding legacy tokens table to allow nullable st")
+        await db.execute("PRAGMA foreign_keys = OFF")
+        await db.execute("ALTER TABLE tokens RENAME TO tokens_legacy_notnull_st")
+        await db.execute("""
+            CREATE TABLE tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                st TEXT UNIQUE,
+                cookie TEXT,
+                at TEXT,
+                at_expires TIMESTAMP,
+                email TEXT NOT NULL,
+                name TEXT,
+                remark TEXT,
+                is_active BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_used_at TIMESTAMP,
+                use_count INTEGER DEFAULT 0,
+                credits INTEGER DEFAULT 0,
+                user_paygate_tier TEXT,
+                current_project_id TEXT,
+                current_project_name TEXT,
+                image_enabled BOOLEAN DEFAULT 1,
+                video_enabled BOOLEAN DEFAULT 1,
+                image_concurrency INTEGER DEFAULT -1,
+                video_concurrency INTEGER DEFAULT -1,
+                captcha_proxy_url TEXT,
+                extension_route_key TEXT,
+                ban_reason TEXT,
+                banned_at TIMESTAMP,
+                automation_risk_score INTEGER DEFAULT 0,
+                automation_risk_state TEXT DEFAULT 'healthy',
+                automation_cooldown_until TIMESTAMP,
+                automation_last_risk_reason TEXT,
+                automation_last_risk_at TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            INSERT INTO tokens (
+                id, st, cookie, at, at_expires, email, name, remark, is_active,
+                created_at, last_used_at, use_count, credits, user_paygate_tier,
+                current_project_id, current_project_name, image_enabled, video_enabled,
+                image_concurrency, video_concurrency, captcha_proxy_url, extension_route_key,
+                ban_reason, banned_at, automation_risk_score, automation_risk_state,
+                automation_cooldown_until, automation_last_risk_reason, automation_last_risk_at
+            )
+            SELECT
+                id, st, cookie, at, at_expires, email, name, remark, is_active,
+                created_at, last_used_at, use_count, credits, user_paygate_tier,
+                current_project_id, current_project_name, image_enabled, video_enabled,
+                image_concurrency, video_concurrency, captcha_proxy_url, extension_route_key,
+                ban_reason, banned_at,
+                COALESCE(automation_risk_score, 0),
+                COALESCE(NULLIF(automation_risk_state, ''), 'healthy'),
+                automation_cooldown_until,
+                automation_last_risk_reason,
+                automation_last_risk_at
+            FROM tokens_legacy_notnull_st
+        """)
+        await db.execute("DROP TABLE tokens_legacy_notnull_st")
+        await db.execute("PRAGMA foreign_keys = ON")
+
+    async def _table_sql_contains(self, db, table_name: str, needle: str) -> bool:
+        """Check whether a table definition contains a given SQL fragment."""
+        try:
+            cursor = await db.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                (table_name,),
+            )
+            row = await cursor.fetchone()
+            return bool(row and needle in str(row[0] or ""))
+        except Exception:
+            return False
+
+    async def _rebuild_table(self, db, table_name: str, create_sql: str, columns: list[str]):
+        """Rebuild a table and copy rows back into the fresh schema."""
+        if not await self._table_exists(db, table_name):
+            return
+
+        temp_name = f"{table_name}_fk_rebuild_old"
+        column_sql = ", ".join(columns)
+        await db.execute(f"ALTER TABLE {table_name} RENAME TO {temp_name}")
+        await db.execute(create_sql)
+        await db.execute(
+            f"INSERT INTO {table_name} ({column_sql}) SELECT {column_sql} FROM {temp_name}"
+        )
+        await db.execute(f"DROP TABLE {temp_name}")
+
+    async def _migrate_captcha_config_drop_remote_browser_fields(self, db):
+        """Rebuild captcha_config to remove legacy remote_browser columns."""
+        if not await self._table_exists(db, "captcha_config"):
+            return
+
+        legacy_columns = (
+            "remote_browser_base_url",
+            "remote_browser_api_key",
+            "remote_browser_timeout",
+        )
+        has_legacy_column = False
+        for name in legacy_columns:
+            if await self._column_exists(db, "captcha_config", name):
+                has_legacy_column = True
+                break
+        if not has_legacy_column:
+            return
+
+        print("  ✓ Rebuilding captcha_config to drop legacy remote_browser columns")
+        await db.execute("PRAGMA foreign_keys = OFF")
+        await db.execute("ALTER TABLE captcha_config RENAME TO captcha_config_remote_browser_legacy")
+        await db.execute("""
+            CREATE TABLE captcha_config (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                captcha_method TEXT DEFAULT 'browser',
+                yescaptcha_api_key TEXT DEFAULT '',
+                yescaptcha_base_url TEXT DEFAULT 'https://api.yescaptcha.com',
+                yescaptcha_task_type TEXT DEFAULT 'RecaptchaV3TaskProxylessM1',
+                capmonster_api_key TEXT DEFAULT '',
+                capmonster_base_url TEXT DEFAULT 'https://api.capmonster.cloud',
+                ezcaptcha_api_key TEXT DEFAULT '',
+                ezcaptcha_base_url TEXT DEFAULT 'https://api.ez-captcha.com',
+                capsolver_api_key TEXT DEFAULT '',
+                capsolver_base_url TEXT DEFAULT 'https://api.capsolver.com',
+                website_key TEXT DEFAULT '6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV',
+                page_action TEXT DEFAULT 'IMAGE_GENERATION',
+                browser_proxy_enabled BOOLEAN DEFAULT 0,
+                browser_proxy_url TEXT,
+                browser_count INTEGER DEFAULT 1,
+                personal_project_pool_size INTEGER DEFAULT 4,
+                personal_max_resident_tabs INTEGER DEFAULT 5,
+                browser_personal_fresh_restart_every_n_solves INTEGER DEFAULT 10,
+                personal_idle_tab_ttl_seconds INTEGER DEFAULT 600,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            INSERT INTO captcha_config (
+                id, captcha_method, yescaptcha_api_key, yescaptcha_base_url,
+                yescaptcha_task_type, capmonster_api_key, capmonster_base_url,
+                ezcaptcha_api_key, ezcaptcha_base_url, capsolver_api_key,
+                capsolver_base_url, website_key, page_action, browser_proxy_enabled,
+                browser_proxy_url, browser_count, personal_project_pool_size,
+                personal_max_resident_tabs, browser_personal_fresh_restart_every_n_solves,
+                personal_idle_tab_ttl_seconds, created_at, updated_at
+            )
+            SELECT
+                id,
+                CASE WHEN captcha_method = 'remote_browser' THEN 'personal' ELSE captcha_method END,
+                yescaptcha_api_key,
+                yescaptcha_base_url,
+                yescaptcha_task_type,
+                capmonster_api_key,
+                capmonster_base_url,
+                ezcaptcha_api_key,
+                ezcaptcha_base_url,
+                capsolver_api_key,
+                capsolver_base_url,
+                website_key,
+                page_action,
+                browser_proxy_enabled,
+                browser_proxy_url,
+                browser_count,
+                personal_project_pool_size,
+                personal_max_resident_tabs,
+                browser_personal_fresh_restart_every_n_solves,
+                personal_idle_tab_ttl_seconds,
+                created_at,
+                updated_at
+            FROM captcha_config_remote_browser_legacy
+        """)
+        await db.execute("DROP TABLE captcha_config_remote_browser_legacy")
+        await db.execute("PRAGMA foreign_keys = ON")
+
+    async def _repair_tables_referencing_legacy_tokens(self, db):
+        """Repair dependent tables whose FK target was rewritten to tokens_legacy_notnull_st."""
+        legacy_target = 'tokens_legacy_notnull_st'
+        affected_tables = (
+            "projects",
+            "token_stats",
+            "tasks",
+            "request_logs",
+            "browser_profiles",
+            "worker_jobs",
+        )
+        if not any([await self._table_sql_contains(db, name, legacy_target) for name in affected_tables]):
+            return
+
+        print("  ✓ Rebuilding dependent tables that still reference legacy tokens table")
+        await db.execute("PRAGMA foreign_keys = OFF")
+
+        await self._rebuild_table(
+            db,
+            "projects",
+            """
+                CREATE TABLE projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT UNIQUE NOT NULL,
+                    token_id INTEGER NOT NULL,
+                    project_name TEXT NOT NULL,
+                    tool_name TEXT DEFAULT 'PINHOLE',
+                    is_active BOOLEAN DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (token_id) REFERENCES tokens(id)
+                )
+            """,
+            ["id", "project_id", "token_id", "project_name", "tool_name", "is_active", "created_at"],
+        )
+        await self._rebuild_table(
+            db,
+            "token_stats",
+            """
+                CREATE TABLE token_stats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    token_id INTEGER NOT NULL,
+                    image_count INTEGER DEFAULT 0,
+                    video_count INTEGER DEFAULT 0,
+                    success_count INTEGER DEFAULT 0,
+                    error_count INTEGER DEFAULT 0,
+                    last_success_at TIMESTAMP,
+                    last_error_at TIMESTAMP,
+                    today_image_count INTEGER DEFAULT 0,
+                    today_video_count INTEGER DEFAULT 0,
+                    today_error_count INTEGER DEFAULT 0,
+                    today_date DATE,
+                    consecutive_error_count INTEGER DEFAULT 0,
+                    FOREIGN KEY (token_id) REFERENCES tokens(id)
+                )
+            """,
+            [
+                "id", "token_id", "image_count", "video_count", "success_count", "error_count",
+                "last_success_at", "last_error_at", "today_image_count", "today_video_count",
+                "today_error_count", "today_date", "consecutive_error_count",
+            ],
+        )
+        await self._rebuild_table(
+            db,
+            "tasks",
+            """
+                CREATE TABLE tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT UNIQUE NOT NULL,
+                    token_id INTEGER NOT NULL,
+                    model TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'processing',
+                    progress INTEGER DEFAULT 0,
+                    result_urls TEXT,
+                    error_message TEXT,
+                    scene_id TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TIMESTAMP,
+                    FOREIGN KEY (token_id) REFERENCES tokens(id)
+                )
+            """,
+            [
+                "id", "task_id", "token_id", "model", "prompt", "status", "progress",
+                "result_urls", "error_message", "scene_id", "created_at", "completed_at",
+            ],
+        )
+        await self._rebuild_table(
+            db,
+            "request_logs",
+            """
+                CREATE TABLE request_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    token_id INTEGER,
+                    operation TEXT NOT NULL,
+                    request_body TEXT,
+                    response_body TEXT,
+                    status_code INTEGER NOT NULL,
+                    duration FLOAT NOT NULL,
+                    status_text TEXT DEFAULT '',
+                    progress INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (token_id) REFERENCES tokens(id)
+                )
+            """,
+            [
+                "id", "token_id", "operation", "request_body", "response_body", "status_code",
+                "duration", "status_text", "progress", "created_at", "updated_at",
+            ],
+        )
+        await self._rebuild_table(
+            db,
+            "browser_profiles",
+            """
+                CREATE TABLE browser_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_id TEXT UNIQUE NOT NULL,
+                    token_id INTEGER UNIQUE,
+                    expected_email TEXT,
+                    proxy_binding TEXT,
+                    storage_path TEXT,
+                    profile_type TEXT DEFAULT 'chrome_local',
+                    last_known_project_id TEXT,
+                    health_status TEXT DEFAULT 'provisioned',
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at TIMESTAMP,
+                    FOREIGN KEY (token_id) REFERENCES tokens(id)
+                )
+            """,
+            [
+                "id", "profile_id", "token_id", "expected_email", "proxy_binding", "storage_path",
+                "profile_type", "last_known_project_id", "health_status", "notes",
+                "created_at", "updated_at", "last_seen_at",
+            ],
+        )
+        await self._rebuild_table(
+            db,
+            "worker_jobs",
+            """
+                CREATE TABLE worker_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT UNIQUE NOT NULL,
+                    token_id INTEGER,
+                    profile_id TEXT,
+                    slot_id TEXT,
+                    route_key TEXT,
+                    job_type TEXT NOT NULL,
+                    status TEXT DEFAULT 'queued',
+                    request_payload TEXT,
+                    result_payload TEXT,
+                    error_message TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    started_at TIMESTAMP,
+                    finished_at TIMESTAMP,
+                    FOREIGN KEY (token_id) REFERENCES tokens(id),
+                    FOREIGN KEY (profile_id) REFERENCES browser_profiles(profile_id),
+                    FOREIGN KEY (slot_id) REFERENCES worker_slots(slot_id)
+                )
+            """,
+            [
+                "id", "job_id", "token_id", "profile_id", "slot_id", "route_key", "job_type",
+                "status", "request_payload", "result_payload", "error_message",
+                "created_at", "started_at", "finished_at",
+            ],
+        )
+        await db.execute("PRAGMA foreign_keys = ON")
+
+    async def _repair_tables_referencing_rebuild_temps(self, db):
+        """Repair tables whose FK target was accidentally rewritten to a rebuild temp table name."""
+        stale_patterns = (
+            "browser_profiles_fk_rebuild_old",
+            "worker_slots_fk_rebuild_old",
+            "worker_jobs_fk_rebuild_old",
+            "projects_fk_rebuild_old",
+            "token_stats_fk_rebuild_old",
+            "tasks_fk_rebuild_old",
+            "request_logs_fk_rebuild_old",
+        )
+        affected_tables = (
+            "browser_profiles",
+            "worker_slots",
+            "worker_jobs",
+        )
+        if not any(
+            [await self._table_sql_contains(db, table_name, pattern) for table_name in affected_tables for pattern in stale_patterns]
+        ):
+            return
+
+        print("  ✓ Rebuilding tables that still reference fk rebuild temp names")
+        await db.execute("PRAGMA foreign_keys = OFF")
+
+        await self._rebuild_table(
+            db,
+            "browser_profiles",
+            """
+                CREATE TABLE browser_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_id TEXT UNIQUE NOT NULL,
+                    token_id INTEGER UNIQUE,
+                    expected_email TEXT,
+                    proxy_binding TEXT,
+                    storage_path TEXT,
+                    profile_type TEXT DEFAULT 'chrome_local',
+                    last_known_project_id TEXT,
+                    health_status TEXT DEFAULT 'provisioned',
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at TIMESTAMP,
+                    FOREIGN KEY (token_id) REFERENCES tokens(id)
+                )
+            """,
+            [
+                "id", "profile_id", "token_id", "expected_email", "proxy_binding", "storage_path",
+                "profile_type", "last_known_project_id", "health_status", "notes",
+                "created_at", "updated_at", "last_seen_at",
+            ],
+        )
+        await self._rebuild_table(
+            db,
+            "worker_slots",
+            """
+                CREATE TABLE worker_slots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slot_id TEXT UNIQUE NOT NULL,
+                    worker_node_id TEXT,
+                    route_key TEXT,
+                    client_label TEXT,
+                    profile_id TEXT,
+                    current_email TEXT,
+                    page_url TEXT,
+                    project_id TEXT,
+                    session_state TEXT,
+                    worker_mode TEXT,
+                    busy BOOLEAN DEFAULT 0,
+                    job_type TEXT,
+                    last_seen_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (worker_node_id) REFERENCES worker_nodes(worker_node_id),
+                    FOREIGN KEY (profile_id) REFERENCES browser_profiles(profile_id)
+                )
+            """,
+            [
+                "id", "slot_id", "worker_node_id", "route_key", "client_label", "profile_id",
+                "current_email", "page_url", "project_id", "session_state", "worker_mode",
+                "busy", "job_type", "last_seen_at", "created_at", "updated_at",
+            ],
+        )
+        await self._rebuild_table(
+            db,
+            "worker_jobs",
+            """
+                CREATE TABLE worker_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT UNIQUE NOT NULL,
+                    token_id INTEGER,
+                    profile_id TEXT,
+                    slot_id TEXT,
+                    route_key TEXT,
+                    job_type TEXT NOT NULL,
+                    status TEXT DEFAULT 'queued',
+                    request_payload TEXT,
+                    result_payload TEXT,
+                    error_message TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    started_at TIMESTAMP,
+                    finished_at TIMESTAMP,
+                    FOREIGN KEY (token_id) REFERENCES tokens(id),
+                    FOREIGN KEY (profile_id) REFERENCES browser_profiles(profile_id),
+                    FOREIGN KEY (slot_id) REFERENCES worker_slots(slot_id)
+                )
+            """,
+            [
+                "id", "job_id", "token_id", "profile_id", "slot_id", "route_key", "job_type",
+                "status", "request_payload", "result_payload", "error_message",
+                "created_at", "started_at", "finished_at",
+            ],
+        )
+        await db.execute("PRAGMA foreign_keys = ON")
 
     async def _ensure_config_rows(self, db, config_dict: dict = None):
         """Ensure all config tables have their default rows
@@ -175,6 +714,74 @@ class Database:
                 VALUES (1, ?, ?)
             """, (call_mode, polling_mode_enabled))
 
+        # Ensure scheduler_config has a row
+        cursor = await db.execute("SELECT COUNT(*) FROM scheduler_config")
+        count = await cursor.fetchone()
+        if count[0] == 0:
+            exhausted_credit_threshold = 0
+            low_credit_threshold = 100
+            image_slot_wait_timeout = 120.0
+            video_slot_wait_timeout = 120.0
+            active_token_credit_refresh_interval_seconds = 900
+            rate_limit_auto_unban_hours = 12
+
+            if config_dict:
+                flow_config = config_dict.get("flow", {})
+                exhausted_credit_threshold = flow_config.get("exhausted_credit_threshold", 0)
+                low_credit_threshold = flow_config.get("low_credit_threshold", 100)
+                image_slot_wait_timeout = flow_config.get("image_slot_wait_timeout", 120)
+                video_slot_wait_timeout = flow_config.get("video_slot_wait_timeout", 120)
+                active_token_credit_refresh_interval_seconds = flow_config.get(
+                    "active_token_credit_refresh_interval_seconds",
+                    900,
+                )
+                rate_limit_auto_unban_hours = flow_config.get("rate_limit_auto_unban_hours", 12)
+
+            try:
+                exhausted_credit_threshold = max(0, int(exhausted_credit_threshold))
+            except Exception:
+                exhausted_credit_threshold = 0
+            try:
+                low_credit_threshold = max(exhausted_credit_threshold, int(low_credit_threshold))
+            except Exception:
+                low_credit_threshold = 100
+            try:
+                image_slot_wait_timeout = max(1.0, min(600.0, float(image_slot_wait_timeout)))
+            except Exception:
+                image_slot_wait_timeout = 120.0
+            try:
+                video_slot_wait_timeout = max(1.0, min(600.0, float(video_slot_wait_timeout)))
+            except Exception:
+                video_slot_wait_timeout = 120.0
+            try:
+                active_token_credit_refresh_interval_seconds = max(0, int(active_token_credit_refresh_interval_seconds))
+            except Exception:
+                active_token_credit_refresh_interval_seconds = 900
+            try:
+                rate_limit_auto_unban_hours = max(1, int(rate_limit_auto_unban_hours))
+            except Exception:
+                rate_limit_auto_unban_hours = 12
+
+            await db.execute("""
+                INSERT INTO scheduler_config (
+                    id,
+                    exhausted_credit_threshold,
+                    low_credit_threshold,
+                    image_slot_wait_timeout,
+                    video_slot_wait_timeout,
+                    active_token_credit_refresh_interval_seconds,
+                    rate_limit_auto_unban_hours
+                )
+                VALUES (1, ?, ?, ?, ?, ?, ?)
+            """, (
+                exhausted_credit_threshold,
+                low_credit_threshold,
+                image_slot_wait_timeout,
+                video_slot_wait_timeout,
+                active_token_credit_refresh_interval_seconds,
+                rate_limit_auto_unban_hours,
+            ))
+
         # Ensure cache_config has a row
         cursor = await db.execute("SELECT COUNT(*) FROM cache_config")
         count = await cursor.fetchone()
@@ -221,13 +828,10 @@ class Database:
         cursor = await db.execute("SELECT COUNT(*) FROM captcha_config")
         count = await cursor.fetchone()
         if count[0] == 0:
-            captcha_method = "browser"
+            captcha_method = "personal"
             yescaptcha_api_key = ""
             yescaptcha_base_url = "https://api.yescaptcha.com"
             yescaptcha_task_type = DEFAULT_YESCAPTCHA_TASK_TYPE
-            remote_browser_base_url = ""
-            remote_browser_api_key = ""
-            remote_browser_timeout = 60
             browser_count = 1
             personal_project_pool_size = 4
             personal_max_resident_tabs = 5
@@ -236,22 +840,17 @@ class Database:
 
             if config_dict:
                 captcha_config = config_dict.get("captcha", {})
-                captcha_method = captcha_config.get("captcha_method", "browser")
+                captcha_method = captcha_config.get("captcha_method", "personal")
+                if captcha_method == "remote_browser":
+                    captcha_method = "personal"
                 yescaptcha_api_key = captcha_config.get("yescaptcha_api_key", "")
                 yescaptcha_base_url = captcha_config.get("yescaptcha_base_url", "https://api.yescaptcha.com")
                 yescaptcha_task_type = normalize_yescaptcha_task_type(captcha_config.get("yescaptcha_task_type"))
-                remote_browser_base_url = captcha_config.get("remote_browser_base_url", "")
-                remote_browser_api_key = captcha_config.get("remote_browser_api_key", "")
-                remote_browser_timeout = captcha_config.get("remote_browser_timeout", 60)
                 browser_count = captcha_config.get("browser_count", 1)
                 personal_project_pool_size = captcha_config.get("personal_project_pool_size", 4)
                 personal_max_resident_tabs = captcha_config.get("personal_max_resident_tabs", 5)
                 browser_personal_fresh_restart_every_n_solves = captcha_config.get("browser_personal_fresh_restart_every_n_solves", 10)
                 personal_idle_tab_ttl_seconds = captcha_config.get("personal_idle_tab_ttl_seconds", 600)
-            try:
-                remote_browser_timeout = max(5, int(remote_browser_timeout))
-            except Exception:
-                remote_browser_timeout = 60
             try:
                 browser_count = max(1, int(browser_count))
             except Exception:
@@ -277,20 +876,16 @@ class Database:
                 INSERT INTO captcha_config (
                     id, captcha_method, yescaptcha_api_key, yescaptcha_base_url,
                     yescaptcha_task_type,
-                    remote_browser_base_url, remote_browser_api_key, remote_browser_timeout,
                     browser_count, personal_project_pool_size,
                     personal_max_resident_tabs, browser_personal_fresh_restart_every_n_solves,
                     personal_idle_tab_ttl_seconds
                 )
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 captcha_method,
                 yescaptcha_api_key,
                 yescaptcha_base_url,
                 yescaptcha_task_type,
-                remote_browser_base_url,
-                remote_browser_api_key,
-                remote_browser_timeout,
                 browser_count,
                 personal_project_pool_size,
                 personal_max_resident_tabs,
@@ -366,6 +961,21 @@ class Database:
                     )
                 """)
 
+            if not await self._table_exists(db, "scheduler_config"):
+                print("  ✓ Creating missing table: scheduler_config")
+                await db.execute("""
+                    CREATE TABLE scheduler_config (
+                        id INTEGER PRIMARY KEY DEFAULT 1,
+                        exhausted_credit_threshold INTEGER DEFAULT 0,
+                        low_credit_threshold INTEGER DEFAULT 100,
+                        image_slot_wait_timeout REAL DEFAULT 120,
+                        video_slot_wait_timeout REAL DEFAULT 120,
+                        active_token_credit_refresh_interval_seconds INTEGER DEFAULT 900,
+                        rate_limit_auto_unban_hours INTEGER DEFAULT 12,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
             # Check and create captcha_config table if missing
             if not await self._table_exists(db, "captcha_config"):
                 print("  ✓ Creating missing table: captcha_config")
@@ -382,9 +992,6 @@ class Database:
                         ezcaptcha_base_url TEXT DEFAULT 'https://api.ez-captcha.com',
                         capsolver_api_key TEXT DEFAULT '',
                         capsolver_base_url TEXT DEFAULT 'https://api.capsolver.com',
-                        remote_browser_base_url TEXT DEFAULT '',
-                        remote_browser_api_key TEXT DEFAULT '',
-                        remote_browser_timeout INTEGER DEFAULT 60,
                         website_key TEXT DEFAULT '6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV',
                         page_action TEXT DEFAULT 'IMAGE_GENERATION',
                         browser_proxy_enabled BOOLEAN DEFAULT 0,
@@ -416,6 +1023,7 @@ class Database:
             # Check and add missing columns to tokens table
             if await self._table_exists(db, "tokens"):
                 columns_to_add = [
+                    ("cookie", "TEXT"),  # 完整浏览器 cookie 快照
                     ("at", "TEXT"),  # Access Token
                     ("at_expires", "TIMESTAMP"),  # AT expiration time
                     ("credits", "INTEGER DEFAULT 0"),  # Balance
@@ -430,6 +1038,11 @@ class Database:
                     ("extension_route_key", "TEXT"),  # extension 模式路由键
                     ("ban_reason", "TEXT"),  # 禁用原因
                     ("banned_at", "TIMESTAMP"),  # 禁用时间
+                    ("automation_risk_score", "INTEGER DEFAULT 0"),
+                    ("automation_risk_state", "TEXT DEFAULT 'healthy'"),
+                    ("automation_cooldown_until", "TIMESTAMP"),
+                    ("automation_last_risk_reason", "TEXT"),
+                    ("automation_last_risk_at", "TIMESTAMP"),
                 ]
 
                 for col_name, col_type in columns_to_add:
@@ -439,6 +1052,10 @@ class Database:
                             print(f"  ✓ Added column '{col_name}' to tokens table")
                         except Exception as e:
                             print(f"  ✗ Failed to add column '{col_name}': {e}")
+
+                await self._migrate_tokens_table_allow_nullable_st(db)
+                await self._repair_tables_referencing_legacy_tokens(db)
+                await self._repair_tables_referencing_rebuild_temps(db)
 
             # Check and add missing columns to admin_config table
             if await self._table_exists(db, "admin_config"):
@@ -491,9 +1108,6 @@ class Database:
                     ("capsolver_api_key", "TEXT DEFAULT ''"),
                     ("capsolver_base_url", "TEXT DEFAULT 'https://api.capsolver.com'"),
                     ("browser_count", "INTEGER DEFAULT 1"),
-                    ("remote_browser_base_url", "TEXT DEFAULT ''"),
-                    ("remote_browser_api_key", "TEXT DEFAULT ''"),
-                    ("remote_browser_timeout", "INTEGER DEFAULT 60"),
                 ]
 
                 for col_name, col_type in captcha_columns_to_add:
@@ -503,6 +1117,8 @@ class Database:
                             print(f"  ✓ Added column '{col_name}' to captcha_config table")
                         except Exception as e:
                             print(f"  ✗ Failed to add column '{col_name}': {e}")
+
+                await self._migrate_captcha_config_drop_remote_browser_fields(db)
 
             # Check and add missing columns to token_stats table
             if await self._table_exists(db, "token_stats"):
@@ -521,6 +1137,8 @@ class Database:
                             print(f"  ✓ Added column '{col_name}' to token_stats table")
                         except Exception as e:
                             print(f"  ✗ Failed to add column '{col_name}': {e}")
+
+            await self._dedupe_token_stats(db)
 
             # Check and add missing columns to plugin_config table
             if await self._table_exists(db, "plugin_config"):
@@ -570,7 +1188,8 @@ class Database:
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS tokens (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    st TEXT UNIQUE NOT NULL,
+                    st TEXT UNIQUE,
+                    cookie TEXT,
                     at TEXT,
                     at_expires TIMESTAMP,
                     email TEXT NOT NULL,
@@ -591,7 +1210,12 @@ class Database:
                     captcha_proxy_url TEXT,
                     extension_route_key TEXT,
                     ban_reason TEXT,
-                    banned_at TIMESTAMP
+                    banned_at TIMESTAMP,
+                    automation_risk_score INTEGER DEFAULT 0,
+                    automation_risk_state TEXT DEFAULT 'healthy',
+                    automation_cooldown_until TIMESTAMP,
+                    automation_last_risk_reason TEXT,
+                    automation_last_risk_at TIMESTAMP
                 )
             """)
 
@@ -711,6 +1335,19 @@ class Database:
                 )
             """)
 
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS scheduler_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    exhausted_credit_threshold INTEGER DEFAULT 0,
+                    low_credit_threshold INTEGER DEFAULT 100,
+                    image_slot_wait_timeout REAL DEFAULT 120,
+                    video_slot_wait_timeout REAL DEFAULT 120,
+                    active_token_credit_refresh_interval_seconds INTEGER DEFAULT 900,
+                    rate_limit_auto_unban_hours INTEGER DEFAULT 12,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
             # Cache config table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS cache_config (
@@ -750,9 +1387,6 @@ class Database:
                     ezcaptcha_base_url TEXT DEFAULT 'https://api.ez-captcha.com',
                     capsolver_api_key TEXT DEFAULT '',
                     capsolver_base_url TEXT DEFAULT 'https://api.capsolver.com',
-                    remote_browser_base_url TEXT DEFAULT '',
-                    remote_browser_api_key TEXT DEFAULT '',
-                    remote_browser_timeout INTEGER DEFAULT 60,
                     website_key TEXT DEFAULT '6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV',
                     page_action TEXT DEFAULT 'IMAGE_GENERATION',
 
@@ -779,12 +1413,95 @@ class Database:
                 )
             """)
 
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS browser_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_id TEXT UNIQUE NOT NULL,
+                    token_id INTEGER UNIQUE,
+                    expected_email TEXT,
+                    proxy_binding TEXT,
+                    storage_path TEXT,
+                    profile_type TEXT DEFAULT 'chrome_local',
+                    last_known_project_id TEXT,
+                    health_status TEXT DEFAULT 'provisioned',
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at TIMESTAMP,
+                    FOREIGN KEY (token_id) REFERENCES tokens(id)
+                )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS worker_nodes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    worker_node_id TEXT UNIQUE NOT NULL,
+                    machine_label TEXT,
+                    host TEXT,
+                    platform TEXT,
+                    max_slots INTEGER DEFAULT 1,
+                    status TEXT DEFAULT 'online',
+                    last_heartbeat_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS worker_slots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slot_id TEXT UNIQUE NOT NULL,
+                    worker_node_id TEXT,
+                    route_key TEXT,
+                    client_label TEXT,
+                    profile_id TEXT,
+                    current_email TEXT,
+                    page_url TEXT,
+                    project_id TEXT,
+                    session_state TEXT,
+                    worker_mode TEXT,
+                    busy BOOLEAN DEFAULT 0,
+                    job_type TEXT,
+                    last_seen_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (worker_node_id) REFERENCES worker_nodes(worker_node_id),
+                    FOREIGN KEY (profile_id) REFERENCES browser_profiles(profile_id)
+                )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS worker_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT UNIQUE NOT NULL,
+                    token_id INTEGER,
+                    profile_id TEXT,
+                    slot_id TEXT,
+                    route_key TEXT,
+                    job_type TEXT NOT NULL,
+                    status TEXT DEFAULT 'queued',
+                    request_payload TEXT,
+                    result_payload TEXT,
+                    error_message TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    started_at TIMESTAMP,
+                    finished_at TIMESTAMP,
+                    FOREIGN KEY (token_id) REFERENCES tokens(id),
+                    FOREIGN KEY (profile_id) REFERENCES browser_profiles(profile_id),
+                    FOREIGN KEY (slot_id) REFERENCES worker_slots(slot_id)
+                )
+            """)
+
             # Create indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_id ON tasks(task_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_token_st ON tokens(st)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_project_id ON projects(project_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tokens_email ON tokens(email)")
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_tokens_is_active_last_used_at ON tokens(is_active, last_used_at)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_browser_profiles_token_id ON browser_profiles(token_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_browser_profiles_expected_email ON browser_profiles(expected_email)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_worker_slots_route_key ON worker_slots(route_key)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_worker_slots_profile_id ON worker_slots(profile_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_worker_jobs_status_created_at ON worker_jobs(status, created_at DESC)")
 
             # Migrate request_logs table if needed
             await self._migrate_request_logs(db)
@@ -795,6 +1512,7 @@ class Database:
 
             # Token stats lookup index
             await db.execute("CREATE INDEX IF NOT EXISTS idx_token_stats_token_id ON token_stats(token_id)")
+            await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_token_stats_token_id_unique ON token_stats(token_id)")
 
             await db.commit()
 
@@ -871,14 +1589,19 @@ class Database:
                 INSERT INTO tokens (st, at, at_expires, email, name, remark, is_active,
                                    credits, user_paygate_tier, current_project_id, current_project_name,
                                    image_enabled, video_enabled, image_concurrency, video_concurrency,
-                                   captcha_proxy_url, extension_route_key)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   captcha_proxy_url, extension_route_key, automation_risk_score,
+                                   automation_risk_state, automation_cooldown_until,
+                                   automation_last_risk_reason, automation_last_risk_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (token.st, token.at, token.at_expires, token.email, token.name, token.remark,
                   token.is_active, token.credits, token.user_paygate_tier,
                   token.current_project_id, token.current_project_name,
                   token.image_enabled, token.video_enabled,
                   token.image_concurrency, token.video_concurrency,
-                  token.captcha_proxy_url, token.extension_route_key))
+                  token.captcha_proxy_url, token.extension_route_key,
+                  token.automation_risk_score, token.automation_risk_state,
+                  token.automation_cooldown_until, token.automation_last_risk_reason,
+                  token.automation_last_risk_at))
             await db.commit()
             token_id = cursor.lastrowid
 
@@ -897,17 +1620,19 @@ class Database:
             cursor = await db.execute("SELECT * FROM tokens WHERE id = ?", (token_id,))
             row = await cursor.fetchone()
             if row:
-                return Token(**dict(row))
+                return self._token_from_row(row)
             return None
 
     async def get_token_by_st(self, st: str) -> Optional[Token]:
         """Get token by ST"""
+        if not str(st or "").strip():
+            return None
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM tokens WHERE st = ?", (st,))
             row = await cursor.fetchone()
             if row:
-                return Token(**dict(row))
+                return self._token_from_row(row)
             return None
 
     async def get_token_by_email(self, email: str) -> Optional[Token]:
@@ -917,7 +1642,7 @@ class Database:
             cursor = await db.execute("SELECT * FROM tokens WHERE email = ?", (email,))
             row = await cursor.fetchone()
             if row:
-                return Token(**dict(row))
+                return self._token_from_row(row)
             return None
 
     async def get_all_tokens(self) -> List[Token]:
@@ -926,7 +1651,7 @@ class Database:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM tokens ORDER BY created_at DESC")
             rows = await cursor.fetchall()
-            return [Token(**dict(row)) for row in rows]
+            return [self._token_from_row(row) for row in rows]
 
     async def get_all_tokens_with_stats(self) -> List[Dict[str, Any]]:
         """Get all tokens with merged statistics in one query"""
@@ -945,7 +1670,14 @@ class Database:
                     COALESCE(ts.consecutive_error_count, 0) AS consecutive_error_count,
                     ts.last_error_at AS last_error_at
                 FROM tokens t
-                LEFT JOIN token_stats ts ON ts.token_id = t.id
+                LEFT JOIN token_stats ts
+                  ON ts.id = (
+                      SELECT ts2.id
+                      FROM token_stats ts2
+                      WHERE ts2.token_id = t.id
+                      ORDER BY ts2.id DESC
+                      LIMIT 1
+                  )
                 ORDER BY t.created_at DESC
             """, (today, today, today))
             rows = await cursor.fetchall()
@@ -1016,7 +1748,547 @@ class Database:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM tokens WHERE is_active = 1 ORDER BY last_used_at ASC")
             rows = await cursor.fetchall()
-            return [Token(**dict(row)) for row in rows]
+            return [self._token_from_row(row) for row in rows]
+
+    async def sync_browser_profiles_from_tokens(self) -> int:
+        """Ensure each token has a default browser profile asset row."""
+        async with self._connect(write=True) as db:
+            db.row_factory = aiosqlite.Row
+            token_rows = await (await db.execute("""
+                SELECT id, email, captcha_proxy_url, current_project_id, is_active, extension_route_key
+                FROM tokens
+                ORDER BY id ASC
+            """)).fetchall()
+            existing_rows = await (await db.execute("""
+                SELECT token_id, profile_id FROM browser_profiles WHERE token_id IS NOT NULL
+            """)).fetchall()
+            existing_by_token = {row["token_id"]: row["profile_id"] for row in existing_rows}
+
+            changed = 0
+            for row in token_rows:
+                token_id = row["id"]
+                route_key_hint = str(row["extension_route_key"] or "").strip()
+                notes = f"route_hint={route_key_hint}" if route_key_hint else None
+                health_status = "provisioned" if bool(row["is_active"]) else "inactive"
+                if token_id in existing_by_token:
+                    await db.execute("""
+                        UPDATE browser_profiles
+                        SET expected_email = ?,
+                            proxy_binding = ?,
+                            last_known_project_id = ?,
+                            health_status = ?,
+                            updated_at = CURRENT_TIMESTAMP,
+                            notes = COALESCE(?, notes)
+                        WHERE token_id = ?
+                    """, (
+                        row["email"],
+                        row["captcha_proxy_url"],
+                        row["current_project_id"],
+                        health_status,
+                        notes,
+                        token_id,
+                    ))
+                else:
+                    await db.execute("""
+                        INSERT INTO browser_profiles (
+                            profile_id,
+                            token_id,
+                            expected_email,
+                            proxy_binding,
+                            profile_type,
+                            last_known_project_id,
+                            health_status,
+                            notes
+                        ) VALUES (?, ?, ?, ?, 'chrome_local', ?, ?, ?)
+                    """, (
+                        f"token-{token_id}",
+                        token_id,
+                        row["email"],
+                        row["captcha_proxy_url"],
+                        row["current_project_id"],
+                        health_status,
+                        notes,
+                    ))
+                changed += 1
+
+            await db.commit()
+            return changed
+
+    async def get_browser_profile_by_token_id(self, token_id: int) -> Optional[BrowserProfile]:
+        """Get the browser profile asset linked to a token."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            row = await (
+                await db.execute("SELECT * FROM browser_profiles WHERE token_id = ?", (token_id,))
+            ).fetchone()
+            return BrowserProfile(**dict(row)) if row else None
+
+    async def list_browser_profiles(self) -> List[Dict[str, Any]]:
+        """List browser profile assets with token linkage."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute("""
+                SELECT
+                    bp.*,
+                    t.email AS token_email,
+                    t.is_active AS token_is_active,
+                    t.current_project_id AS token_current_project_id,
+                    t.extension_route_key AS token_extension_route_key
+                FROM browser_profiles bp
+                LEFT JOIN tokens t ON t.id = bp.token_id
+                ORDER BY bp.created_at DESC, bp.profile_id ASC
+            """)).fetchall()
+            return [dict(row) for row in rows]
+
+    async def upsert_worker_node(
+        self,
+        *,
+        worker_node_id: str,
+        machine_label: Optional[str] = None,
+        host: Optional[str] = None,
+        platform: Optional[str] = None,
+        max_slots: int = 1,
+        status: str = "online",
+        last_heartbeat_at: Optional[datetime] = None,
+    ) -> None:
+        """Create or update a worker node."""
+        async with self._connect(write=True) as db:
+            db.row_factory = aiosqlite.Row
+            existing = await (
+                await db.execute("SELECT id FROM worker_nodes WHERE worker_node_id = ?", (worker_node_id,))
+            ).fetchone()
+            if existing:
+                await db.execute("""
+                    UPDATE worker_nodes
+                    SET machine_label = ?,
+                        host = ?,
+                        platform = ?,
+                        max_slots = ?,
+                        status = ?,
+                        last_heartbeat_at = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE worker_node_id = ?
+                """, (machine_label, host, platform, max_slots, status, last_heartbeat_at, worker_node_id))
+            else:
+                await db.execute("""
+                    INSERT INTO worker_nodes (
+                        worker_node_id,
+                        machine_label,
+                        host,
+                        platform,
+                        max_slots,
+                        status,
+                        last_heartbeat_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (worker_node_id, machine_label, host, platform, max_slots, status, last_heartbeat_at))
+            await db.commit()
+
+    async def upsert_worker_slot(
+        self,
+        *,
+        slot_id: str,
+        worker_node_id: Optional[str] = None,
+        route_key: Optional[str] = None,
+        client_label: Optional[str] = None,
+        profile_id: Optional[str] = None,
+        current_email: Optional[str] = None,
+        page_url: Optional[str] = None,
+        project_id: Optional[str] = None,
+        session_state: Optional[str] = None,
+        worker_mode: Optional[str] = None,
+        busy: bool = False,
+        job_type: Optional[str] = None,
+        last_seen_at: Optional[datetime] = None,
+    ) -> None:
+        """Create or update a worker slot."""
+        async with self._connect(write=True) as db:
+            db.row_factory = aiosqlite.Row
+            existing = await (
+                await db.execute("SELECT id FROM worker_slots WHERE slot_id = ?", (slot_id,))
+            ).fetchone()
+            if existing:
+                await db.execute("""
+                    UPDATE worker_slots
+                    SET worker_node_id = ?,
+                        route_key = ?,
+                        client_label = ?,
+                        profile_id = ?,
+                        current_email = ?,
+                        page_url = ?,
+                        project_id = ?,
+                        session_state = ?,
+                        worker_mode = ?,
+                        busy = ?,
+                        job_type = ?,
+                        last_seen_at = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE slot_id = ?
+                """, (
+                    worker_node_id,
+                    route_key,
+                    client_label,
+                    profile_id,
+                    current_email,
+                    page_url,
+                    project_id,
+                    session_state,
+                    worker_mode,
+                    busy,
+                    job_type,
+                    last_seen_at,
+                    slot_id,
+                ))
+            else:
+                await db.execute("""
+                    INSERT INTO worker_slots (
+                        slot_id,
+                        worker_node_id,
+                        route_key,
+                        client_label,
+                        profile_id,
+                        current_email,
+                        page_url,
+                        project_id,
+                        session_state,
+                        worker_mode,
+                        busy,
+                        job_type,
+                        last_seen_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    slot_id,
+                    worker_node_id,
+                    route_key,
+                    client_label,
+                    profile_id,
+                    current_email,
+                    page_url,
+                    project_id,
+                    session_state,
+                    worker_mode,
+                    busy,
+                    job_type,
+                    last_seen_at,
+                ))
+            await db.commit()
+
+    async def clear_worker_slots_for_profile(self, profile_id: str) -> None:
+        """Remove stale worker slot rows for a browser profile before relaunch."""
+        normalized = str(profile_id or "").strip()
+        if not normalized:
+            return
+        async with self._connect(write=True) as db:
+            await db.execute("DELETE FROM worker_jobs WHERE profile_id = ?", (normalized,))
+            await db.execute("DELETE FROM worker_slots WHERE profile_id = ?", (normalized,))
+            await db.commit()
+
+    async def sync_extension_routes_to_worker_slots(self, routes: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Project live extension route snapshots into Phase-A worker slot tables."""
+        worker_node_id = "extension-local-node"
+        await self.upsert_worker_node(
+            worker_node_id=worker_node_id,
+            machine_label="Extension Browser Workers",
+            host="local-extension-cluster",
+            platform="chrome-extension",
+            max_slots=max(1, len(routes)),
+            status="online" if routes else "idle",
+            last_heartbeat_at=datetime.utcnow(),
+        )
+
+        async with self._connect(write=True) as db:
+            db.row_factory = aiosqlite.Row
+            profile_rows = await (await db.execute("""
+                SELECT bp.profile_id, bp.expected_email, bp.token_id, t.extension_route_key
+                FROM browser_profiles bp
+                LEFT JOIN tokens t ON t.id = bp.token_id
+            """)).fetchall()
+            profiles_by_route = {
+                str(row["extension_route_key"] or "").strip(): row["profile_id"]
+                for row in profile_rows
+                if str(row["extension_route_key"] or "").strip()
+            }
+
+            active_slot_ids: list[str] = []
+            for route in routes:
+                route_key = str(route.get("route_key") or "").strip()
+                client_label = str(route.get("client_label") or "").strip()
+                slot_id = route_key or f"anonymous:{client_label or 'extension'}"
+                active_slot_ids.append(slot_id)
+
+                assigned_tokens = route.get("assigned_tokens") or []
+                profile_id = None
+                for item in assigned_tokens:
+                    token_id = item.get("token_id")
+                    if token_id:
+                        match = next((row["profile_id"] for row in profile_rows if row["token_id"] == token_id), None)
+                        if match:
+                            profile_id = match
+                            break
+                if not profile_id and route_key:
+                    profile_id = profiles_by_route.get(route_key)
+                last_seen_raw = route.get("last_seen_at")
+                last_seen_at = None
+                if isinstance(last_seen_raw, (int, float)):
+                    try:
+                        last_seen_at = datetime.fromtimestamp(last_seen_raw)
+                    except Exception:
+                        last_seen_at = None
+
+                await db.execute("""
+                    INSERT INTO worker_slots (
+                        slot_id,
+                        worker_node_id,
+                        route_key,
+                        client_label,
+                        profile_id,
+                        current_email,
+                        page_url,
+                        project_id,
+                        session_state,
+                        worker_mode,
+                        busy,
+                        job_type,
+                        last_seen_at,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(slot_id) DO UPDATE SET
+                        worker_node_id = excluded.worker_node_id,
+                        route_key = excluded.route_key,
+                        client_label = excluded.client_label,
+                        profile_id = excluded.profile_id,
+                        current_email = excluded.current_email,
+                        page_url = excluded.page_url,
+                        project_id = excluded.project_id,
+                        session_state = excluded.session_state,
+                        worker_mode = excluded.worker_mode,
+                        last_seen_at = excluded.last_seen_at,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (
+                    slot_id,
+                    worker_node_id,
+                    route_key,
+                    client_label,
+                    profile_id,
+                    str(route.get("current_email") or "").strip(),
+                    str(route.get("page_url") or "").strip(),
+                    str(route.get("project_id") or "").strip(),
+                    str(route.get("session_state") or "").strip(),
+                    str(route.get("worker_mode") or "").strip(),
+                    last_seen_at,
+                ))
+
+            stale_slot_query = "SELECT slot_id FROM worker_slots WHERE worker_node_id = ?"
+            stale_slot_params: list[Any] = [worker_node_id]
+            if active_slot_ids:
+                placeholders = ",".join("?" for _ in active_slot_ids)
+                stale_slot_query += f" AND slot_id NOT IN ({placeholders})"
+                stale_slot_params.extend(active_slot_ids)
+            stale_slot_rows = await (await db.execute(stale_slot_query, stale_slot_params)).fetchall()
+            stale_slot_ids = [str(row["slot_id"] or "").strip() for row in stale_slot_rows if str(row["slot_id"] or "").strip()]
+
+            if stale_slot_ids:
+                stale_placeholders = ",".join("?" for _ in stale_slot_ids)
+                # Keep historical worker job logs, but detach them from ephemeral slots
+                # before deleting stale worker_slots rows to satisfy the FK constraint.
+                await db.execute(
+                    f"UPDATE worker_jobs SET slot_id = NULL WHERE slot_id IN ({stale_placeholders})",
+                    stale_slot_ids,
+                )
+                await db.execute(
+                    f"DELETE FROM worker_slots WHERE slot_id IN ({stale_placeholders})",
+                    stale_slot_ids,
+                )
+
+            await db.commit()
+            return {"worker_nodes": 1, "worker_slots": len(active_slot_ids)}
+
+    async def list_worker_nodes(self) -> List[WorkerNode]:
+        """List known worker nodes."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute("""
+                SELECT * FROM worker_nodes ORDER BY updated_at DESC, worker_node_id ASC
+            """)).fetchall()
+            return [WorkerNode(**dict(row)) for row in rows]
+
+    async def list_worker_slots(self) -> List[Dict[str, Any]]:
+        """List current worker slots with profile linkage."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute("""
+                SELECT
+                    ws.*,
+                    bp.expected_email AS profile_expected_email,
+                    bp.token_id AS profile_token_id,
+                    wn.machine_label AS worker_node_label,
+                    wn.status AS worker_node_status
+                FROM worker_slots ws
+                LEFT JOIN browser_profiles bp ON bp.profile_id = ws.profile_id
+                LEFT JOIN worker_nodes wn ON wn.worker_node_id = ws.worker_node_id
+                ORDER BY ws.updated_at DESC, ws.slot_id ASC
+            """)).fetchall()
+            return [dict(row) for row in rows]
+
+    async def list_worker_jobs(self, limit: int = 100) -> List[WorkerJob]:
+        """List recent browser worker jobs."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute("""
+                SELECT * FROM worker_jobs ORDER BY created_at DESC LIMIT ?
+            """, (max(1, int(limit)),))).fetchall()
+            return [WorkerJob(**dict(row)) for row in rows]
+
+    async def create_worker_job(self, job: WorkerJob) -> int:
+        """Create a browser worker job record."""
+        async with self._connect(write=True) as db:
+            cursor = await db.execute("""
+                INSERT INTO worker_jobs (
+                    job_id,
+                    token_id,
+                    profile_id,
+                    slot_id,
+                    route_key,
+                    job_type,
+                    status,
+                    request_payload,
+                    result_payload,
+                    error_message,
+                    started_at,
+                    finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                job.job_id,
+                job.token_id,
+                job.profile_id,
+                job.slot_id,
+                job.route_key,
+                job.job_type,
+                job.status,
+                job.request_payload,
+                job.result_payload,
+                job.error_message,
+                job.started_at,
+                job.finished_at,
+            ))
+            await db.commit()
+            return cursor.lastrowid
+
+    async def update_worker_job(self, job_id: str, **kwargs) -> None:
+        """Update a browser worker job record."""
+        async with self._connect(write=True) as db:
+            updates = []
+            params = []
+
+            for key, value in kwargs.items():
+                if value is not None:
+                    updates.append(f"{key} = ?")
+                    params.append(value)
+
+            if updates:
+                params.append(job_id)
+                await db.execute(
+                    f"UPDATE worker_jobs SET {', '.join(updates)} WHERE job_id = ?",
+                    params,
+                )
+                await db.commit()
+
+    async def get_worker_job(self, job_id: str) -> Optional[WorkerJob]:
+        """Get a browser worker job by job_id."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            row = await (
+                await db.execute("SELECT * FROM worker_jobs WHERE job_id = ?", (job_id,))
+            ).fetchone()
+            return WorkerJob(**dict(row)) if row else None
+
+    async def list_token_worker_bindings(self) -> List[Dict[str, Any]]:
+        """List token -> profile -> latest slot binding summaries."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute("""
+                SELECT
+                    t.id AS token_id,
+                    t.email AS token_email,
+                    t.extension_route_key AS token_extension_route_key,
+                    bp.profile_id,
+                    bp.health_status AS profile_health_status,
+                    bp.last_known_project_id AS profile_last_known_project_id,
+                    bp.proxy_binding AS profile_proxy_binding,
+                    ws.slot_id,
+                    ws.worker_node_id,
+                    ws.route_key,
+                    ws.client_label,
+                    ws.current_email,
+                    ws.page_url,
+                    ws.project_id,
+                    ws.session_state,
+                    ws.worker_mode,
+                    ws.busy,
+                    ws.job_type,
+                    ws.last_seen_at
+                FROM tokens t
+                LEFT JOIN browser_profiles bp ON bp.token_id = t.id
+                LEFT JOIN worker_slots ws
+                  ON ws.id = (
+                      SELECT ws2.id
+                      FROM worker_slots ws2
+                      WHERE ws2.profile_id = bp.profile_id
+                        AND (
+                            t.extension_route_key IS NULL
+                            OR t.extension_route_key = ''
+                            OR ws2.route_key = t.extension_route_key
+                        )
+                      ORDER BY ws2.updated_at DESC, ws2.id DESC
+                      LIMIT 1
+                  )
+                ORDER BY t.id ASC
+            """)).fetchall()
+            return [dict(row) for row in rows]
+
+    async def get_token_worker_binding(self, token_id: int) -> Optional[Dict[str, Any]]:
+        """Get the latest profile/slot binding summary for a token."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute("""
+                SELECT
+                    t.id AS token_id,
+                    t.email AS token_email,
+                    t.extension_route_key AS token_extension_route_key,
+                    bp.profile_id,
+                    bp.health_status AS profile_health_status,
+                    bp.last_known_project_id AS profile_last_known_project_id,
+                    bp.proxy_binding AS profile_proxy_binding,
+                    ws.slot_id,
+                    ws.worker_node_id,
+                    ws.route_key,
+                    ws.client_label,
+                    ws.current_email,
+                    ws.page_url,
+                    ws.project_id,
+                    ws.session_state,
+                    ws.worker_mode,
+                    ws.busy,
+                    ws.job_type,
+                    ws.last_seen_at
+                FROM tokens t
+                LEFT JOIN browser_profiles bp ON bp.token_id = t.id
+                LEFT JOIN worker_slots ws
+                  ON ws.id = (
+                      SELECT ws2.id
+                      FROM worker_slots ws2
+                      WHERE ws2.profile_id = bp.profile_id
+                        AND (
+                            t.extension_route_key IS NULL
+                            OR t.extension_route_key = ''
+                            OR ws2.route_key = t.extension_route_key
+                        )
+                      ORDER BY ws2.updated_at DESC, ws2.id DESC
+                      LIMIT 1
+                  )
+                WHERE t.id = ?
+                LIMIT 1
+            """, (token_id,))).fetchone()
+            return dict(row) if row else None
 
     async def update_token(self, token_id: int, **kwargs):
         """Update token fields"""
@@ -1037,12 +2309,63 @@ class Database:
     async def delete_token(self, token_id: int):
         """Delete token and related data"""
         async with self._connect(write=True) as db:
-            await db.execute("UPDATE request_logs SET token_id = NULL WHERE token_id = ?", (token_id,))
-            await db.execute("DELETE FROM tasks WHERE token_id = ?", (token_id,))
-            await db.execute("DELETE FROM token_stats WHERE token_id = ?", (token_id,))
-            await db.execute("DELETE FROM projects WHERE token_id = ?", (token_id,))
-            await db.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
-            await db.commit()
+            cursor = await db.execute(
+                "SELECT profile_id FROM browser_profiles WHERE token_id = ?",
+                (token_id,),
+            )
+            profile_rows = await cursor.fetchall()
+            profile_ids = [str(row[0] or "").strip() for row in profile_rows if str(row[0] or "").strip()]
+
+            slot_ids: list[str] = []
+            if profile_ids:
+                placeholders = ",".join("?" for _ in profile_ids)
+                cursor = await db.execute(
+                    f"SELECT slot_id FROM worker_slots WHERE profile_id IN ({placeholders})",
+                    tuple(profile_ids),
+                )
+                slot_rows = await cursor.fetchall()
+                slot_ids = [str(row[0] or "").strip() for row in slot_rows if str(row[0] or "").strip()]
+
+            current_step = "update_request_logs"
+            try:
+                await db.execute("UPDATE request_logs SET token_id = NULL WHERE token_id = ?", (token_id,))
+                current_step = "delete_worker_jobs_by_token"
+                await db.execute("DELETE FROM worker_jobs WHERE token_id = ?", (token_id,))
+                if profile_ids:
+                    placeholders = ",".join("?" for _ in profile_ids)
+                    current_step = "delete_worker_jobs_by_profile"
+                    await db.execute(
+                        f"DELETE FROM worker_jobs WHERE profile_id IN ({placeholders})",
+                        tuple(profile_ids),
+                    )
+                if slot_ids:
+                    placeholders = ",".join("?" for _ in slot_ids)
+                    current_step = "delete_worker_jobs_by_slot"
+                    await db.execute(
+                        f"DELETE FROM worker_jobs WHERE slot_id IN ({placeholders})",
+                        tuple(slot_ids),
+                    )
+                if profile_ids:
+                    placeholders = ",".join("?" for _ in profile_ids)
+                    current_step = "delete_worker_slots_by_profile"
+                    await db.execute(
+                        f"DELETE FROM worker_slots WHERE profile_id IN ({placeholders})",
+                        tuple(profile_ids),
+                    )
+                current_step = "delete_browser_profiles"
+                await db.execute("DELETE FROM browser_profiles WHERE token_id = ?", (token_id,))
+                current_step = "delete_tasks"
+                await db.execute("DELETE FROM tasks WHERE token_id = ?", (token_id,))
+                current_step = "delete_token_stats"
+                await db.execute("DELETE FROM token_stats WHERE token_id = ?", (token_id,))
+                current_step = "delete_projects"
+                await db.execute("DELETE FROM projects WHERE token_id = ?", (token_id,))
+                current_step = "delete_tokens"
+                await db.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
+                current_step = "commit"
+                await db.commit()
+            except Exception as e:
+                raise
 
     # Project operations
     async def add_project(self, project: Project) -> int:
@@ -1425,6 +2748,101 @@ class Database:
             """, (normalized, polling_mode_enabled))
             await db.commit()
 
+    async def get_scheduler_config(self) -> SchedulerConfig:
+        """Get centralized scheduler strategy configuration."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM scheduler_config WHERE id = 1")
+            row = await cursor.fetchone()
+            if row:
+                return SchedulerConfig(**dict(row))
+            return SchedulerConfig()
+
+    async def update_scheduler_config(
+        self,
+        *,
+        exhausted_credit_threshold: Optional[int] = None,
+        low_credit_threshold: Optional[int] = None,
+        image_slot_wait_timeout: Optional[float] = None,
+        video_slot_wait_timeout: Optional[float] = None,
+        active_token_credit_refresh_interval_seconds: Optional[int] = None,
+        rate_limit_auto_unban_hours: Optional[int] = None,
+    ):
+        """Update centralized scheduler strategy configuration."""
+        current = await self.get_scheduler_config()
+
+        try:
+            normalized_exhausted = (
+                max(0, int(exhausted_credit_threshold))
+                if exhausted_credit_threshold is not None
+                else max(0, int(current.exhausted_credit_threshold))
+            )
+        except Exception:
+            normalized_exhausted = 0
+        try:
+            normalized_low = (
+                max(normalized_exhausted, int(low_credit_threshold))
+                if low_credit_threshold is not None
+                else max(normalized_exhausted, int(current.low_credit_threshold))
+            )
+        except Exception:
+            normalized_low = max(normalized_exhausted, 100)
+        try:
+            normalized_image_wait = (
+                max(1.0, min(600.0, float(image_slot_wait_timeout)))
+                if image_slot_wait_timeout is not None
+                else max(1.0, min(600.0, float(current.image_slot_wait_timeout)))
+            )
+        except Exception:
+            normalized_image_wait = 120.0
+        try:
+            normalized_video_wait = (
+                max(1.0, min(600.0, float(video_slot_wait_timeout)))
+                if video_slot_wait_timeout is not None
+                else max(1.0, min(600.0, float(current.video_slot_wait_timeout)))
+            )
+        except Exception:
+            normalized_video_wait = 120.0
+        try:
+            normalized_credit_refresh_interval = (
+                max(0, int(active_token_credit_refresh_interval_seconds))
+                if active_token_credit_refresh_interval_seconds is not None
+                else max(0, int(current.active_token_credit_refresh_interval_seconds))
+            )
+        except Exception:
+            normalized_credit_refresh_interval = 900
+        try:
+            normalized_unban_hours = (
+                max(1, int(rate_limit_auto_unban_hours))
+                if rate_limit_auto_unban_hours is not None
+                else max(1, int(current.rate_limit_auto_unban_hours))
+            )
+        except Exception:
+            normalized_unban_hours = 12
+
+        async with self._connect(write=True) as db:
+            await db.execute("""
+                INSERT OR REPLACE INTO scheduler_config (
+                    id,
+                    exhausted_credit_threshold,
+                    low_credit_threshold,
+                    image_slot_wait_timeout,
+                    video_slot_wait_timeout,
+                    active_token_credit_refresh_interval_seconds,
+                    rate_limit_auto_unban_hours,
+                    updated_at
+                )
+                VALUES (1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (
+                normalized_exhausted,
+                normalized_low,
+                normalized_image_wait,
+                normalized_video_wait,
+                normalized_credit_refresh_interval,
+                normalized_unban_hours,
+            ))
+            await db.commit()
+
     # Request log operations
     async def add_request_log(self, log: RequestLog) -> int:
         """Add request log and return log id"""
@@ -1636,6 +3054,17 @@ class Database:
         if call_logic_config:
             config.set_call_logic_mode(call_logic_config.call_mode)
 
+        scheduler_config = await self.get_scheduler_config()
+        if scheduler_config:
+            config.set_exhausted_credit_threshold(scheduler_config.exhausted_credit_threshold)
+            config.set_low_credit_threshold(scheduler_config.low_credit_threshold)
+            config.set_flow_image_slot_wait_timeout(scheduler_config.image_slot_wait_timeout)
+            config.set_flow_video_slot_wait_timeout(scheduler_config.video_slot_wait_timeout)
+            config.set_active_token_credit_refresh_interval_seconds(
+                scheduler_config.active_token_credit_refresh_interval_seconds
+            )
+            config.set_rate_limit_auto_unban_hours(scheduler_config.rate_limit_auto_unban_hours)
+
         # Reload debug config
         debug_config = await self.get_debug_config()
         if debug_config:
@@ -1654,9 +3083,6 @@ class Database:
             config.set_ezcaptcha_base_url(captcha_config.ezcaptcha_base_url)
             config.set_capsolver_api_key(captcha_config.capsolver_api_key)
             config.set_capsolver_base_url(captcha_config.capsolver_base_url)
-            config.set_remote_browser_base_url(captcha_config.remote_browser_base_url)
-            config.set_remote_browser_api_key(captcha_config.remote_browser_api_key)
-            config.set_remote_browser_timeout(captcha_config.remote_browser_timeout)
             config.set_browser_count(captcha_config.browser_count)
             config.set_personal_project_pool_size(captcha_config.personal_project_pool_size)
             config.set_personal_max_resident_tabs(captcha_config.personal_max_resident_tabs)
@@ -1776,7 +3202,14 @@ class Database:
             cursor = await db.execute("SELECT * FROM captcha_config WHERE id = 1")
             row = await cursor.fetchone()
             if row:
-                return CaptchaConfig(**dict(row))
+                data = dict(row)
+                if data.get("captcha_method") == "remote_browser":
+                    data["captcha_method"] = "personal"
+                allowed_fields = getattr(CaptchaConfig, "model_fields", None)
+                if allowed_fields is None:
+                    allowed_fields = getattr(CaptchaConfig, "__fields__", {})
+                filtered = {key: value for key, value in data.items() if key in allowed_fields}
+                return CaptchaConfig(**filtered)
             return CaptchaConfig()
 
     async def update_captcha_config(
@@ -1791,9 +3224,6 @@ class Database:
         ezcaptcha_base_url: str = None,
         capsolver_api_key: str = None,
         capsolver_base_url: str = None,
-        remote_browser_base_url: str = None,
-        remote_browser_api_key: str = None,
-        remote_browser_timeout: int = None,
         browser_proxy_enabled: bool = None,
         browser_proxy_url: str = None,
         browser_count: int = None,
@@ -1811,6 +3241,8 @@ class Database:
             if row:
                 current = dict(row)
                 new_method = captcha_method if captcha_method is not None else current.get("captcha_method", "yescaptcha")
+                if new_method == "remote_browser":
+                    new_method = "personal"
                 new_yes_key = yescaptcha_api_key if yescaptcha_api_key is not None else current.get("yescaptcha_api_key", "")
                 new_yes_url = yescaptcha_base_url if yescaptcha_base_url is not None else current.get("yescaptcha_base_url", "https://api.yescaptcha.com")
                 new_yes_task_type = normalize_yescaptcha_task_type(
@@ -1822,9 +3254,6 @@ class Database:
                 new_ez_url = ezcaptcha_base_url if ezcaptcha_base_url is not None else current.get("ezcaptcha_base_url", "https://api.ez-captcha.com")
                 new_cs_key = capsolver_api_key if capsolver_api_key is not None else current.get("capsolver_api_key", "")
                 new_cs_url = capsolver_base_url if capsolver_base_url is not None else current.get("capsolver_base_url", "https://api.capsolver.com")
-                new_remote_base_url = remote_browser_base_url if remote_browser_base_url is not None else current.get("remote_browser_base_url", "")
-                new_remote_api_key = remote_browser_api_key if remote_browser_api_key is not None else current.get("remote_browser_api_key", "")
-                new_remote_timeout = remote_browser_timeout if remote_browser_timeout is not None else current.get("remote_browser_timeout", 60)
                 new_proxy_enabled = browser_proxy_enabled if browser_proxy_enabled is not None else current.get("browser_proxy_enabled", False)
                 new_proxy_url = browser_proxy_url if browser_proxy_url is not None else current.get("browser_proxy_url")
                 new_browser_count = browser_count if browser_count is not None else current.get("browser_count", 1)
@@ -1836,7 +3265,6 @@ class Database:
                     else current.get("browser_personal_fresh_restart_every_n_solves", 10)
                 )
                 new_personal_idle_ttl = personal_idle_tab_ttl_seconds if personal_idle_tab_ttl_seconds is not None else current.get("personal_idle_tab_ttl_seconds", 600)
-                new_remote_timeout = max(5, int(new_remote_timeout)) if new_remote_timeout is not None else 60
                 new_browser_count = max(1, min(20, int(new_browser_count)))
                 new_personal_project_pool_size = max(1, min(50, int(new_personal_project_pool_size)))
                 new_personal_max_tabs = max(1, min(50, int(new_personal_max_tabs)))  # 限制1-50
@@ -1850,7 +3278,6 @@ class Database:
                         capmonster_api_key = ?, capmonster_base_url = ?,
                         ezcaptcha_api_key = ?, ezcaptcha_base_url = ?,
                         capsolver_api_key = ?, capsolver_base_url = ?,
-                        remote_browser_base_url = ?, remote_browser_api_key = ?, remote_browser_timeout = ?,
                         browser_proxy_enabled = ?, browser_proxy_url = ?, browser_count = ?,
                         personal_project_pool_size = ?,
                         personal_max_resident_tabs = ?,
@@ -1861,11 +3288,12 @@ class Database:
                 """, (new_method, new_yes_key, new_yes_url, new_yes_task_type,
                       new_cap_key, new_cap_url,
                       new_ez_key, new_ez_url, new_cs_key, new_cs_url,
-                      (new_remote_base_url or "").strip(), (new_remote_api_key or "").strip(), new_remote_timeout,
                       new_proxy_enabled, new_proxy_url, new_browser_count, new_personal_project_pool_size,
                       new_personal_max_tabs, new_personal_fresh_restart_every, new_personal_idle_ttl))
             else:
                 new_method = captcha_method if captcha_method is not None else "yescaptcha"
+                if new_method == "remote_browser":
+                    new_method = "personal"
                 new_yes_key = yescaptcha_api_key if yescaptcha_api_key is not None else ""
                 new_yes_url = yescaptcha_base_url if yescaptcha_base_url is not None else "https://api.yescaptcha.com"
                 new_yes_task_type = normalize_yescaptcha_task_type(yescaptcha_task_type)
@@ -1875,9 +3303,6 @@ class Database:
                 new_ez_url = ezcaptcha_base_url if ezcaptcha_base_url is not None else "https://api.ez-captcha.com"
                 new_cs_key = capsolver_api_key if capsolver_api_key is not None else ""
                 new_cs_url = capsolver_base_url if capsolver_base_url is not None else "https://api.capsolver.com"
-                new_remote_base_url = remote_browser_base_url if remote_browser_base_url is not None else ""
-                new_remote_api_key = remote_browser_api_key if remote_browser_api_key is not None else ""
-                new_remote_timeout = remote_browser_timeout if remote_browser_timeout is not None else 60
                 new_proxy_enabled = browser_proxy_enabled if browser_proxy_enabled is not None else False
                 new_proxy_url = browser_proxy_url
                 new_browser_count = browser_count if browser_count is not None else 1
@@ -1889,7 +3314,6 @@ class Database:
                     else 10
                 )
                 new_personal_idle_ttl = personal_idle_tab_ttl_seconds if personal_idle_tab_ttl_seconds is not None else 600
-                new_remote_timeout = max(5, int(new_remote_timeout))
                 new_browser_count = max(1, min(20, int(new_browser_count)))
                 new_personal_project_pool_size = max(1, min(50, int(new_personal_project_pool_size)))
                 new_personal_max_tabs = max(1, min(50, int(new_personal_max_tabs)))
@@ -1901,16 +3325,14 @@ class Database:
                         yescaptcha_task_type,
                         capmonster_api_key, capmonster_base_url, ezcaptcha_api_key, ezcaptcha_base_url,
                         capsolver_api_key, capsolver_base_url,
-                        remote_browser_base_url, remote_browser_api_key, remote_browser_timeout,
                         browser_proxy_enabled, browser_proxy_url, browser_count,
                         personal_project_pool_size,
                         personal_max_resident_tabs, browser_personal_fresh_restart_every_n_solves,
                         personal_idle_tab_ttl_seconds)
-                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (new_method, new_yes_key, new_yes_url, new_yes_task_type,
                       new_cap_key, new_cap_url,
                       new_ez_key, new_ez_url, new_cs_key, new_cs_url,
-                      (new_remote_base_url or "").strip(), (new_remote_api_key or "").strip(), new_remote_timeout,
                       new_proxy_enabled, new_proxy_url, new_browser_count, new_personal_project_pool_size,
                       new_personal_max_tabs, new_personal_fresh_restart_every, new_personal_idle_ttl))
 

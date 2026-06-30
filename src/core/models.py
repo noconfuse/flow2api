@@ -10,8 +10,9 @@ class Token(BaseModel):
 
     id: Optional[int] = None
 
-    # 认证信息 (核心)
-    st: str  # Session Token (__Secure-next-auth.session-token)
+    # 认证信息 (核心，browser-backed 主流程下可由浏览器反向同步)
+    st: Optional[str] = None  # Session Token (__Secure-next-auth.session-token)
+    cookie: Optional[str] = None  # 完整浏览器 cookie 快照（personal/resident 浏览器复用）
     at: Optional[str] = None  # Access Token (从ST转换而来)
     at_expires: Optional[datetime] = None  # AT过期时间
 
@@ -47,6 +48,13 @@ class Token(BaseModel):
     # 429禁用相关
     ban_reason: Optional[str] = None  # 禁用原因: "429_rate_limit" 或 None
     banned_at: Optional[datetime] = None  # 禁用时间
+
+    # 自动化风控风险态（不等同于账号禁用）
+    automation_risk_score: int = 0
+    automation_risk_state: str = "healthy"  # healthy/sensitive/cooldown
+    automation_cooldown_until: Optional[datetime] = None
+    automation_last_risk_reason: Optional[str] = None
+    automation_last_risk_at: Optional[datetime] = None
 
 
 class Project(BaseModel):
@@ -151,6 +159,19 @@ class CallLogicConfig(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class SchedulerConfig(BaseModel):
+    """Centralized scheduler strategy configuration"""
+
+    id: int = 1
+    exhausted_credit_threshold: int = 0
+    low_credit_threshold: int = 100
+    image_slot_wait_timeout: float = 120.0
+    video_slot_wait_timeout: float = 120.0
+    active_token_credit_refresh_interval_seconds: int = 900
+    rate_limit_auto_unban_hours: int = 12
+    updated_at: Optional[datetime] = None
+
+
 class CacheConfig(BaseModel):
     """Cache configuration"""
 
@@ -178,7 +199,7 @@ class CaptchaConfig(BaseModel):
     """Captcha configuration"""
 
     id: int = 1
-    captcha_method: str = "browser"  # yescaptcha/capmonster/ezcaptcha/capsolver/browser/personal/remote_browser
+    captcha_method: str = "browser"  # yescaptcha/capmonster/ezcaptcha/capsolver/browser/personal
     yescaptcha_api_key: str = ""
     yescaptcha_base_url: str = "https://api.yescaptcha.com"
     yescaptcha_task_type: str = "RecaptchaV3TaskProxylessM1"
@@ -188,9 +209,6 @@ class CaptchaConfig(BaseModel):
     ezcaptcha_base_url: str = "https://api.ez-captcha.com"
     capsolver_api_key: str = ""
     capsolver_base_url: str = "https://api.capsolver.com"
-    remote_browser_base_url: str = ""
-    remote_browser_api_key: str = ""
-    remote_browser_timeout: int = 60
     website_key: str = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
     page_action: str = "IMAGE_GENERATION"
     browser_proxy_enabled: bool = False  # 浏览器打码是否启用代理
@@ -212,6 +230,79 @@ class PluginConfig(BaseModel):
     auto_enable_on_update: bool = True  # 更新token时自动启用（默认开启）
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+
+class BrowserProfile(BaseModel):
+    """Persistent browser identity asset bound to a token/account."""
+
+    id: Optional[int] = None
+    profile_id: str
+    token_id: Optional[int] = None
+    expected_email: Optional[str] = None
+    proxy_binding: Optional[str] = None
+    storage_path: Optional[str] = None
+    profile_type: str = "chrome_local"
+    last_known_project_id: Optional[str] = None
+    health_status: str = "provisioned"
+    notes: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
+
+
+class WorkerNode(BaseModel):
+    """Execution machine that can host one or more browser slots."""
+
+    id: Optional[int] = None
+    worker_node_id: str
+    machine_label: Optional[str] = None
+    host: Optional[str] = None
+    platform: Optional[str] = None
+    max_slots: int = 1
+    status: str = "online"
+    last_heartbeat_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class WorkerSlot(BaseModel):
+    """Online browser execution slot bound to a current route connection."""
+
+    id: Optional[int] = None
+    slot_id: str
+    worker_node_id: Optional[str] = None
+    route_key: Optional[str] = None
+    client_label: Optional[str] = None
+    profile_id: Optional[str] = None
+    current_email: Optional[str] = None
+    page_url: Optional[str] = None
+    project_id: Optional[str] = None
+    session_state: Optional[str] = None
+    worker_mode: Optional[str] = None
+    busy: bool = False
+    job_type: Optional[str] = None
+    last_seen_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class WorkerJob(BaseModel):
+    """Browser execution job dispatched to a slot."""
+
+    id: Optional[int] = None
+    job_id: str
+    token_id: Optional[int] = None
+    profile_id: Optional[str] = None
+    slot_id: Optional[str] = None
+    route_key: Optional[str] = None
+    job_type: str
+    status: str = "queued"
+    request_payload: Optional[str] = None
+    result_payload: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
 
 
 # OpenAI Compatible Request Models
@@ -278,6 +369,10 @@ class GeminiGenerateContentRequest(BaseModel):
     contents: List[GeminiContent]
     generationConfig: Optional[GenerationConfigParam] = None
     systemInstruction: Optional[GeminiContent] = None
+    preferred_token_id: Optional[int] = None
+    preferred_project_id: Optional[str] = None
+    source_image_media_ids: Optional[List[str]] = None
+    source_image_selected_material_index: Optional[int] = None
 
     model_config = ConfigDict(extra="allow")
 
@@ -296,5 +391,9 @@ class ChatCompletionRequest(BaseModel):
     # Gemini extension parameters (from extra_body or top-level)
     generationConfig: Optional[GenerationConfigParam] = None
     contents: Optional[List[Any]] = None  # Gemini native contents
+    preferred_token_id: Optional[int] = None
+    preferred_project_id: Optional[str] = None
+    source_image_media_ids: Optional[List[str]] = None
+    source_image_selected_material_index: Optional[int] = None
 
     model_config = ConfigDict(extra="allow")  # Allow extra fields like extra_body passthrough

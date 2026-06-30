@@ -1,7 +1,8 @@
 """Load balancing module for Flow2API"""
 import asyncio
 import random
-from typing import Optional, Dict
+from datetime import datetime, timezone
+from typing import Optional, Dict, Any
 from ..core.models import Token
 from ..core.config import config
 from ..core.account_tiers import (
@@ -11,6 +12,7 @@ from ..core.account_tiers import (
     supports_model_for_tier,
 )
 from .concurrency_manager import ConcurrencyManager
+from .browser_profile_runtime import ensure_token_browser_ready
 from ..core.logger import debug_logger
 
 
@@ -25,6 +27,49 @@ class LoadBalancer:
         self._pending_lock = asyncio.Lock()
         self._round_robin_state: Dict[str, Optional[int]] = {"image": None, "video": None, "default": None}
         self._rr_lock = asyncio.Lock()
+
+    def _get_token_credits(self, token: Token) -> int:
+        try:
+            return int(token.credits or 0)
+        except Exception:
+            return 0
+
+    def _is_credit_exhausted(self, token: Token) -> bool:
+        return self._get_token_credits(token) <= config.exhausted_credit_threshold
+
+    def _is_low_credit(self, token: Token) -> bool:
+        credits = self._get_token_credits(token)
+        return config.exhausted_credit_threshold < credits <= config.low_credit_threshold
+
+    def _get_automation_risk_score(self, token: Token) -> int:
+        try:
+            return max(0, int(token.automation_risk_score or 0))
+        except Exception:
+            return 0
+
+    def _get_automation_risk_state(self, token: Token) -> str:
+        return str(token.automation_risk_state or "healthy").strip().lower()
+
+    def _is_automation_risk_blocked(self, token: Token, for_video_generation: bool) -> tuple[bool, str]:
+        return False, ""
+
+    def _is_automation_risk_cooling_down(self, token: Token, for_video_generation: bool) -> tuple[bool, str]:
+        if not for_video_generation or config.captcha_method != "extension":
+            return False, ""
+
+        state = self._get_automation_risk_state(token)
+        cooldown_until = token.automation_cooldown_until
+        if state == "blocked":
+            return True, f"自动化风控高风险冷却中 (legacy blocked, score={self._get_automation_risk_score(token)})"
+        if state != "cooldown" or not cooldown_until:
+            return False, ""
+
+        now = datetime.now(timezone.utc)
+        if cooldown_until.tzinfo is None:
+            cooldown_until = cooldown_until.replace(tzinfo=timezone.utc)
+        if cooldown_until > now:
+            return True, f"自动化风控冷却中，直到 {cooldown_until.isoformat()}"
+        return False, ""
 
     async def _get_pending_count(self, token_id: int, for_image_generation: bool, for_video_generation: bool) -> int:
         async with self._pending_lock:
@@ -125,17 +170,112 @@ class LoadBalancer:
         try:
             from .browser_captcha_extension import ExtensionCaptchaService
 
-            service = await ExtensionCaptchaService.get_instance(getattr(self.token_manager, "db", None))
-            has_connection, route_key = await service.has_connection_for_token(token.id)
-            if has_connection:
-                return True, ""
+            db = getattr(self.token_manager, "db", None)
+            service = await ExtensionCaptchaService.get_instance(db)
+            if db:
+                try:
+                    await db.sync_browser_profiles_from_tokens()
+                    await db.sync_extension_routes_to_worker_slots(await service.list_route_status())
+                    binding = await db.get_token_worker_binding(token.id)
+                except Exception as exc:
+                    binding = None
+                    debug_logger.log_warning(
+                        f"[LOAD_BALANCER] 构建 token {token.id} 的 profile/slot 绑定视图失败，将回退到 route 校验: {exc}"
+                    )
+                if binding:
+                    slot_id = str(binding.get("slot_id") or "").strip()
+                    profile_id = str(binding.get("profile_id") or "").strip()
+                    slot_email = str(binding.get("current_email") or "").strip().lower()
+                    token_email = str(token.email or "").strip().lower()
+                    if not profile_id:
+                        return False, f"token {token.id} 尚未生成 browser profile 资产"
+                    if slot_id:
+                        if slot_email and token_email and slot_email != token_email:
+                            return (
+                                False,
+                                f"browser slot {slot_id} 当前上报账号 {binding.get('current_email')}，"
+                                f"与 token {token.id} 的邮箱 {token.email} 不一致",
+                            )
+                        return True, ""
 
-            available = service.describe_routes() or "none"
-            if route_key:
-                return False, f"扩展路由 {route_key} 未连接（可用路由: {available}）"
-            return False, f"扩展路由未配置或匿名插件未连接（可用路由: {available}）"
+            route_ok, route_key, route_error, _ = await service.validate_connection_for_token(token.id)
+            if route_ok:
+                return True, ""
+            return False, route_error
         except Exception as exc:
             return False, f"扩展路由检查失败: {exc}"
+
+    async def _build_extension_worker_snapshot(self) -> Optional[Dict[str, Any]]:
+        """Build a snapshot of token -> profile -> slot availability for extension mode."""
+        if config.captcha_method != "extension":
+            return None
+
+        db = getattr(self.token_manager, "db", None)
+        if not db:
+            return None
+
+        try:
+            from .browser_captcha_extension import ExtensionCaptchaService
+
+            service = await ExtensionCaptchaService.get_instance(db)
+            await db.sync_browser_profiles_from_tokens()
+            await db.sync_extension_routes_to_worker_slots(await service.list_route_status())
+            binding_rows = await db.list_token_worker_bindings()
+            binding_map = {
+                int(item["token_id"]): item
+                for item in binding_rows
+                if item.get("token_id") is not None
+            }
+            return {
+                "bindings": binding_map,
+                "service": service,
+            }
+        except Exception as exc:
+            debug_logger.log_warning(
+                f"[LOAD_BALANCER] 构建 extension profile/slot snapshot 失败，将退回逐 token route 校验: {exc}"
+            )
+            return None
+
+    async def _check_extension_binding_snapshot(
+        self,
+        token: Token,
+        snapshot: Optional[Dict[str, Any]],
+    ) -> tuple[bool, str]:
+        """Validate extension availability using the Phase-B profile/slot snapshot."""
+        if config.captcha_method != "extension":
+            return True, ""
+
+        if not snapshot:
+            return await self._check_extension_route(token)
+
+        binding = (snapshot.get("bindings") or {}).get(token.id)
+        if binding:
+            profile_id = str(binding.get("profile_id") or "").strip()
+            slot_id = str(binding.get("slot_id") or "").strip()
+            current_email = str(binding.get("current_email") or "").strip().lower()
+            token_email = str(token.email or "").strip().lower()
+            if slot_id:
+                if current_email and token_email and current_email != token_email:
+                    return (
+                        False,
+                        f"browser slot {slot_id} 当前上报账号 {binding.get('current_email')}，"
+                        f"与 token {token.id} 的邮箱 {token.email} 不一致",
+                    )
+                return True, ""
+            if not profile_id:
+                route_ok, _, route_error, _ = await snapshot["service"].validate_connection_for_token(token.id)
+                if route_ok:
+                    return True, ""
+                return False, route_error or f"token {token.id} 尚未生成 browser profile 资产"
+
+        service = snapshot.get("service")
+        if not service:
+            return await self._check_extension_route(token)
+
+        route_ok, route_key, route_error, _ = await service.validate_connection_for_token(token.id)
+        if route_ok:
+            return True, ""
+        return False, route_error
 
     async def select_token(
         self,
@@ -145,6 +285,8 @@ class LoadBalancer:
         reserve: bool = False,
         enforce_concurrency_filter: bool = True,
         track_pending: bool = False,
+        preferred_token_id: Optional[int] = None,
+        _auto_launch_attempted: bool = False,
     ) -> Optional[Token]:
         """
         Select a token using load-aware balancing
@@ -167,7 +309,8 @@ class LoadBalancer:
         """
         debug_logger.log_info(
             f"[LOAD_BALANCER] 开始选择Token (图片生成={for_image_generation}, "
-            f"视频生成={for_video_generation}, 模型={model}, 预占槽位={reserve})"
+            f"视频生成={for_video_generation}, 模型={model}, 预占槽位={reserve}, "
+            f"preferred_token_id={preferred_token_id})"
         )
 
         active_tokens = await self.token_manager.get_active_tokens()
@@ -177,21 +320,43 @@ class LoadBalancer:
             debug_logger.log_info(f"[LOAD_BALANCER] ❌ 没有活跃的Token")
             return None
 
+        if preferred_token_id is not None:
+            active_tokens = [token for token in active_tokens if token.id == preferred_token_id]
+            debug_logger.log_info(
+                f"[LOAD_BALANCER] 指定Token模式，过滤后剩余 {len(active_tokens)} 个候选"
+            )
+            if not active_tokens:
+                return None
+
         available_tokens = []
+        launchable_extension_tokens = []
         filtered_reasons = {}
         required_tier = get_required_paygate_tier_for_model(model)
+        extension_snapshot = await self._build_extension_worker_snapshot()
 
         for token in active_tokens:
             normalized_tier = normalize_user_paygate_tier(token.user_paygate_tier)
             if model and not supports_model_for_tier(model, normalized_tier):
                 filtered_reasons[token.id] = '账号等级不足，需要 ' + get_paygate_tier_label(required_tier)
                 continue
+            if self._is_credit_exhausted(token):
+                filtered_reasons[token.id] = f"账号余额已耗尽 (credits={self._get_token_credits(token)})"
+                continue
+            automation_risk_blocked, automation_risk_reason = self._is_automation_risk_blocked(
+                token,
+                for_video_generation=for_video_generation,
+            )
+            if automation_risk_blocked:
+                filtered_reasons[token.id] = automation_risk_reason
+                continue
+            launchable_extension_tokens.append(token)
             if for_image_generation:
                 if not token.image_enabled:
+                    launchable_extension_tokens.pop()
                     filtered_reasons[token.id] = "图片生成已禁用"
                     continue
 
-                route_ok, route_reason = await self._check_extension_route(token)
+                route_ok, route_reason = await self._check_extension_binding_snapshot(token, extension_snapshot)
                 if not route_ok:
                     filtered_reasons[token.id] = route_reason
                     continue
@@ -206,10 +371,11 @@ class LoadBalancer:
 
             if for_video_generation:
                 if not token.video_enabled:
+                    launchable_extension_tokens.pop()
                     filtered_reasons[token.id] = "视频生成已禁用"
                     continue
 
-                route_ok, route_reason = await self._check_extension_route(token)
+                route_ok, route_reason = await self._check_extension_binding_snapshot(token, extension_snapshot)
                 if not route_ok:
                     filtered_reasons[token.id] = route_reason
                     continue
@@ -232,6 +398,13 @@ class LoadBalancer:
                 "inflight": inflight,
                 "remaining": remaining,
                 "needs_refresh": self.token_manager.needs_at_refresh(token),
+                "low_credit": self._is_low_credit(token),
+                "credits": self._get_token_credits(token),
+                "automation_risk_score": self._get_automation_risk_score(token),
+                "cooling_down": self._is_automation_risk_cooling_down(
+                    token,
+                    for_video_generation=for_video_generation,
+                )[0],
                 "random": random.random()
             })
 
@@ -241,6 +414,43 @@ class LoadBalancer:
                 debug_logger.log_info(f"[LOAD_BALANCER]   - Token {token_id}: {reason}")
 
         if not available_tokens:
+            if (
+                config.captcha_method == "extension"
+                and not _auto_launch_attempted
+                and launchable_extension_tokens
+            ):
+                candidate = launchable_extension_tokens[0]
+                debug_logger.log_info(
+                    f"[LOAD_BALANCER] 尝试自动拉起离线浏览器账号 token {candidate.id} ({candidate.email})"
+                )
+                try:
+                    db = getattr(self.token_manager, "db", None)
+                    if db:
+                        launch_state = await ensure_token_browser_ready(
+                            db,
+                            token_id=int(candidate.id),
+                        )
+                        if launch_state.get("success"):
+                            debug_logger.log_info(
+                                f"[LOAD_BALANCER] token {candidate.id} 浏览器已自动拉起，重新选择账号"
+                            )
+                            return await self.select_token(
+                                for_image_generation=for_image_generation,
+                                for_video_generation=for_video_generation,
+                                model=model,
+                                reserve=reserve,
+                                enforce_concurrency_filter=enforce_concurrency_filter,
+                                track_pending=track_pending,
+                                preferred_token_id=preferred_token_id,
+                                _auto_launch_attempted=True,
+                            )
+                        debug_logger.log_warning(
+                            f"[LOAD_BALANCER] token {candidate.id} 自动拉起失败: {launch_state.get('error')}"
+                        )
+                except Exception as exc:
+                    debug_logger.log_warning(
+                        f"[LOAD_BALANCER] 自动拉起离线浏览器账号失败 token {candidate.id}: {exc}"
+                    )
             debug_logger.log_info(f"[LOAD_BALANCER] ❌ 没有可用的Token (图片生成={for_image_generation}, 视频生成={for_video_generation})")
             return None
 
@@ -254,11 +464,28 @@ class LoadBalancer:
                 scenario = "video"
 
             ordered_candidates = []
-            first_candidate = await self._select_round_robin(available_tokens, scenario)
+            healthy_candidates = [item for item in available_tokens if not item["cooling_down"] and not item["low_credit"]]
+            healthy_low_credit_candidates = [item for item in available_tokens if not item["cooling_down"] and item["low_credit"]]
+            cooling_candidates = [item for item in available_tokens if item["cooling_down"] and not item["low_credit"]]
+            cooling_low_credit_candidates = [item for item in available_tokens if item["cooling_down"] and item["low_credit"]]
+            primary_candidates = healthy_candidates or healthy_low_credit_candidates or cooling_candidates or cooling_low_credit_candidates
+            secondary_candidates = []
+            if primary_candidates is healthy_candidates:
+                secondary_candidates = healthy_low_credit_candidates + cooling_candidates + cooling_low_credit_candidates
+            elif primary_candidates is healthy_low_credit_candidates:
+                secondary_candidates = cooling_candidates + cooling_low_credit_candidates
+            elif primary_candidates is cooling_candidates:
+                secondary_candidates = cooling_low_credit_candidates
+
+            first_candidate = await self._select_round_robin(primary_candidates, scenario)
             if first_candidate is not None:
                 ordered_candidates.append(first_candidate)
                 ordered_candidates.extend(
-                    item for item in sorted(available_tokens, key=lambda item: item["token"].id or 0)
+                    item for item in sorted(primary_candidates, key=lambda item: item["token"].id or 0)
+                    if item["token"].id != first_candidate["token"].id
+                )
+                ordered_candidates.extend(
+                    item for item in sorted(secondary_candidates, key=lambda item: item["token"].id or 0)
                     if item["token"].id != first_candidate["token"].id
                 )
             available_tokens = ordered_candidates
@@ -266,9 +493,13 @@ class LoadBalancer:
             available_tokens.sort(
                 key=lambda item: (
                     1 if item["needs_refresh"] else 0,
+                    1 if item["low_credit"] else 0,
+                    1 if item["cooling_down"] else 0,
+                    item["automation_risk_score"],
                     item["inflight"],
                     0 if item["remaining"] is None else 1,
                     -(item["remaining"] or 0),
+                    -item["credits"],
                     item["random"]
                 )
             )
@@ -285,7 +516,8 @@ class LoadBalancer:
             debug_logger.log_info(
                 f"[LOAD_BALANCER]   - Token {token.id} ({token.email}) "
                 f"inflight={item['inflight']}, remaining={remaining}, "
-                f"needs_refresh={item['needs_refresh']}, credits={token.credits}"
+                f"needs_refresh={item['needs_refresh']}, cooldown={item['cooling_down']}, "
+                f"credits={token.credits}"
             )
 
         # 只为候选列表中真正尝试到的 token 做 AT 校验，避免每次请求把所有 token 全扫一遍
@@ -296,6 +528,12 @@ class LoadBalancer:
             token = await self.token_manager.ensure_valid_token(token)
             if not token:
                 debug_logger.log_info(f"[LOAD_BALANCER] 跳过 Token {token_id}: AT无效或已过期")
+                continue
+
+            if self._is_credit_exhausted(token):
+                debug_logger.log_info(
+                    f"[LOAD_BALANCER] 跳过 Token {token.id}: 余额已耗尽 (credits={self._get_token_credits(token)})"
+                )
                 continue
 
             if reserve and not await self._reserve_slot(token.id, for_image_generation, for_video_generation):
@@ -351,5 +589,33 @@ class LoadBalancer:
                 return "当前有符合档位的账号，但图片生成功能已全部禁用。"
             if for_video_generation:
                 return "当前有符合档位的账号，但视频生成功能已全部禁用。"
+
+        credit_tokens = [token for token in capability_tokens if not self._is_credit_exhausted(token)]
+        if capability_tokens and not credit_tokens:
+            return (
+                "当前有符合条件的账号，但余额已全部耗尽。"
+                f" exhausted_credit_threshold={config.exhausted_credit_threshold}"
+            )
+
+        if config.captcha_method == "extension":
+            snapshot = await self._build_extension_worker_snapshot()
+            if snapshot:
+                has_profile = False
+                has_online_slot = False
+                for token in credit_tokens:
+                    binding = (snapshot.get("bindings") or {}).get(token.id) or {}
+                    if binding.get("profile_id"):
+                        has_profile = True
+                    if binding.get("slot_id"):
+                        current_email = str(binding.get("current_email") or "").strip().lower()
+                        token_email = str(token.email or "").strip().lower()
+                        if current_email and token_email and current_email != token_email:
+                            continue
+                        has_online_slot = True
+                        break
+                if credit_tokens and not has_profile:
+                    return "当前 extension 账号尚未建立 browser profile 资产。"
+                if has_profile and not has_online_slot:
+                    return "当前已有 browser profile 资产，但没有可用的在线 worker slot。"
 
         return None

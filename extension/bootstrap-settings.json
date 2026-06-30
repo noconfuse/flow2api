@@ -1,0 +1,6 @@
+{
+  "serverUrl": "ws://127.0.0.1:8000/captcha_ws",
+  "apiKey": "",
+  "routeKey": "",
+  "clientLabel": ""
+}

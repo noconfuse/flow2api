@@ -21,11 +21,13 @@ import json
 import hashlib
 import mimetypes
 import shutil
+import sqlite3
 import tempfile
 import subprocess
 import types
+import urllib.request
 from pathlib import Path
-from typing import Optional, Dict, Any, Iterable
+from typing import Optional, Dict, Any, Iterable, Union
 from urllib.parse import urljoin, urlparse, urlunparse
 
 from ..core.logger import debug_logger
@@ -35,7 +37,9 @@ from .browser_cookie_utils import (
     build_cookie_signature,
     merge_browser_cookie_payloads,
     normalize_cookie_storage_text,
+    parse_browser_cookie_payload,
 )
+
 
 # flow2api 缺少的配置常量和函数，内联定义
 TOKEN_POOL_SIZE_MAX = 500
@@ -123,6 +127,51 @@ PERSONAL_FINGERPRINT_SURFACE_SPOOF_MARKER = "__personalFingerprintSurfaceSpoofIn
 PERSONAL_RUNTIME_ROOT = Path(__file__).resolve().parents[1]
 PERSONAL_RUNTIME_TMP_DIR = PERSONAL_RUNTIME_ROOT / "tmp"
 PERSONAL_RUNTIME_DATA_DIR = PERSONAL_RUNTIME_ROOT / "data"
+PERSONAL_PROFILE_CLONE_SKIP_DIR_NAMES = {
+    "Cache",
+    "Code Cache",
+    "GPUCache",
+    "Crashpad",
+    "GrShaderCache",
+    "GraphiteDawnCache",
+    "DawnWebGPUCache",
+    "DawnGraphiteCache",
+    "Safe Browsing",
+    "BrowserMetrics",
+    "blob_storage",
+}
+PERSONAL_PROFILE_CLONE_SKIP_FILE_PREFIXES = (
+    "Singleton",
+)
+PERSONAL_PROFILE_CLONE_SQLITE_FILES = {
+    "Cookies",
+    "History",
+    "History-journal",
+    "History Provider Cache",
+    "Web Data",
+    "Login Data",
+    "Login Data For Account",
+    "Favicons",
+}
+PERSONAL_PROFILE_CLONE_ROOT_FILES = {
+    "Local State",
+    "First Run",
+    "Last Version",
+}
+PERSONAL_PROFILE_CLONE_MINIMAL_PROFILE_FILES = {
+    "Cookies",
+    "Preferences",
+    "Secure Preferences",
+    "Web Data",
+    "Login Data",
+    "Login Data For Account",
+    "Favicons",
+    "PreferredApps",
+    "Shortcuts",
+    "Extension Cookies",
+    "Safe Browsing Cookies",
+    "ServerCertificate",
+}
 
 
 # ==================== Docker 环境检测 ====================
@@ -367,6 +416,49 @@ def _read_windows_app_path(executable_name: str) -> Optional[str]:
 
 def _detect_real_browser_executable_path() -> Optional[str]:
     """尽量探测本机已安装的真实 Chromium 浏览器，避免交给 nodriver 自行弹选择。"""
+    if sys.platform == "darwin":
+        mac_browser_candidates = [
+            (
+                "Google Chrome",
+                [
+                    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                    os.path.expanduser("~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                ],
+            ),
+            (
+                "Chromium",
+                [
+                    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+                    os.path.expanduser("~/Applications/Chromium.app/Contents/MacOS/Chromium"),
+                ],
+            ),
+            (
+                "Microsoft Edge",
+                [
+                    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+                    os.path.expanduser("~/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+                ],
+            ),
+            (
+                "Brave",
+                [
+                    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+                    os.path.expanduser("~/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+                ],
+            ),
+        ]
+        for browser_name, candidates in mac_browser_candidates:
+            for candidate in candidates:
+                resolved = str(candidate or "").strip().strip('"')
+                if not resolved or not os.path.exists(resolved):
+                    continue
+                normalized = os.path.normpath(resolved)
+                debug_logger.log_info(
+                    f"[BrowserCaptcha] 自动检测到真实浏览器 {browser_name}: {normalized}"
+                )
+                return normalized
+        return None
+
     if os.name != "nt":
         linux_browser_candidates = [
             (
@@ -508,6 +600,10 @@ def _resolve_browser_executable_path() -> tuple[Optional[str], str]:
         debug_logger.log_info(f"[BrowserCaptcha] 使用环境变量指定浏览器: {normalized}")
         return normalized, "configured"
 
+    detected_browser_executable_path = _detect_real_browser_executable_path()
+    if detected_browser_executable_path:
+        return detected_browser_executable_path, "detected"
+
     return None, "auto"
 
 
@@ -516,14 +612,16 @@ def _build_personal_browser_args(
     headless: bool,
     proxy_server_arg: Optional[str] = None,
     proxy_extension_dir: Optional[str] = None,
+    preserve_profile_state: bool = False,
+    profile_directory: Optional[str] = None,
 ) -> list[str]:
     """构建 personal 模式浏览器启动参数。
 
     说明：
-    - 始终依赖独立临时 user-data-dir，避免污染系统真实资料。
-    - 显式去掉 `--profile-directory=Default` 这种容易误导的配置。
+    - 默认依赖独立临时 user-data-dir，避免污染系统真实资料。
+    - 仅在显式启用可信 profile 复用时附加 `--profile-directory=...`。
     - 显式加 `--no-startup-window`，避免 Chrome 先弹一个默认普通窗口。
-    - 仅在未加载代理认证扩展时附加 `--incognito`，避免扩展在无痕窗口中失效。
+    - 仅在未启用可信 profile 且未加载代理认证扩展时附加 `--incognito`，避免扩展在无痕窗口中失效。
     """
     browser_args = [
         '--disable-quic',
@@ -559,10 +657,14 @@ def _build_personal_browser_args(
     if proxy_server_arg:
         browser_args.append(proxy_server_arg)
 
+    normalized_profile_directory = str(profile_directory or "").strip()
+    if normalized_profile_directory:
+        browser_args.append(f"--profile-directory={normalized_profile_directory}")
+
     if proxy_extension_dir:
         # 代理认证扩展在 bwsi/incognito 风格会话下容易失效，保持临时 profile 即可满足隔离需求。
         browser_args.append(f'--load-extension={proxy_extension_dir}')
-    else:
+    elif not preserve_profile_state:
         browser_args.append('--bwsi')
         browser_args.append('--disable-extensions')
         browser_args.append('--incognito')
@@ -655,6 +757,50 @@ def _tune_personal_browser_args_for_docker_headed(
         '--password-store=basic',
         '--ozone-platform=x11',
         '--use-gl=swiftshader',
+    ])
+    return tuned_args
+
+
+def _tune_personal_browser_args_for_desktop_real_browser(
+    browser_args: list[str],
+) -> list[str]:
+    """Use a more conservative arg set for real desktop Chrome/Edge/Brave."""
+    removable_exact = {
+        '--disable-dev-shm-usage',
+        '--disable-breakpad',
+        '--disable-client-side-phishing-detection',
+        '--disable-gpu',
+        '--disable-infobars',
+        '--hide-scrollbars',
+        '--disable-background-networking',
+        '--disable-component-update',
+        '--disable-domain-reliability',
+        '--disable-sync',
+        '--disable-translate',
+        '--disable-default-apps',
+        '--metrics-recording-only',
+        '--safebrowsing-disable-auto-update',
+        '--bwsi',
+        '--incognito',
+        '--disable-extensions',
+        '--no-zygote',
+        '--disable-features=UseDnsHttpsSvcb,OptimizationHints,AutofillServerCommunication,CertificateTransparencyComponentUpdater,MediaRouter,GlobalMediaControls',
+    }
+    removable_prefixes = (
+        '--window-position=',
+    )
+
+    tuned_args: list[str] = []
+    for arg in browser_args:
+        if arg in removable_exact:
+            continue
+        if any(arg.startswith(prefix) for prefix in removable_prefixes):
+            continue
+        tuned_args.append(arg)
+
+    tuned_args.extend([
+        '--window-size=1366,768',
+        '--window-position=80,80',
     ])
     return tuned_args
 
@@ -1418,6 +1564,7 @@ class BrowserCaptchaService:
         self._runtime_ephemeral_user_data_dir: Optional[str] = None
         self._managed_runtime_profile_dirs: set[str] = set()
         self._browser_process_pid: Optional[int] = None
+        self._effective_profile_directory_name: Optional[str] = None
         self.user_data_dir = self._resolve_user_data_dir(self.headless)
         self._visible_startup_target_id: Optional[str] = None
         self._headless_host_target_id: Optional[str] = None
@@ -1533,15 +1680,172 @@ class BrowserCaptchaService:
         self.user_data_dir = normalized_dir
         return normalized_dir
 
+    def _resolve_configured_personal_browser_user_data_dir(self) -> str:
+        return (
+            os.environ.get("PERSONAL_BROWSER_USER_DATA_DIR", "").strip()
+            or str(getattr(config, "personal_browser_user_data_dir", "") or "").strip()
+        )
+
+    def _resolve_configured_personal_browser_profile_source_dir(self) -> str:
+        return (
+            os.environ.get("PERSONAL_BROWSER_PROFILE_SOURCE_DIR", "").strip()
+            or str(getattr(config, "personal_browser_profile_source_dir", "") or "").strip()
+        )
+
+    def _resolve_configured_personal_browser_profile_directory(self) -> str:
+        profile_directory = (
+            os.environ.get("PERSONAL_BROWSER_PROFILE_DIRECTORY", "").strip()
+            or str(getattr(config, "personal_browser_profile_directory", "Default") or "").strip()
+        )
+        return profile_directory or "Default"
+
+    def _looks_like_browser_profile_dir(self, path_value: Path) -> bool:
+        return any(
+            candidate.exists()
+            for candidate in (
+                path_value / "Cookies",
+                path_value / "Network" / "Cookies",
+                path_value / "Preferences",
+            )
+        )
+
+    def _copy_sqlite_database_snapshot(self, source_path: Path, target_path: Path) -> None:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_target_path = target_path.with_suffix(f"{target_path.suffix}.tmp")
+        for sidecar in (
+            tmp_target_path.parent / f"{tmp_target_path.name}-wal",
+            tmp_target_path.parent / f"{tmp_target_path.name}-shm",
+            target_path.parent / f"{target_path.name}-wal",
+            target_path.parent / f"{target_path.name}-shm",
+        ):
+            _remove_path_quietly(sidecar)
+
+        try:
+            with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as source_conn:
+                with sqlite3.connect(str(tmp_target_path)) as target_conn:
+                    source_conn.backup(target_conn)
+            os.replace(str(tmp_target_path), str(target_path))
+        except Exception:
+            _remove_path_quietly(tmp_target_path)
+            shutil.copy2(str(source_path), str(target_path))
+
+    def _copy_profile_tree(self, source_dir: Path, target_dir: Path) -> None:
+        source_dir = source_dir.resolve()
+        for root, dirs, files in os.walk(str(source_dir)):
+            root_path = Path(root)
+            relative_root = root_path.relative_to(source_dir)
+
+            filtered_dirs = []
+            for dir_name in dirs:
+                if dir_name in PERSONAL_PROFILE_CLONE_SKIP_DIR_NAMES:
+                    continue
+                filtered_dirs.append(dir_name)
+            dirs[:] = filtered_dirs
+
+            current_target_dir = target_dir / relative_root
+            current_target_dir.mkdir(parents=True, exist_ok=True)
+
+            for file_name in files:
+                if file_name.startswith(PERSONAL_PROFILE_CLONE_SKIP_FILE_PREFIXES):
+                    continue
+                if file_name in {"LOCK", ".DS_Store"}:
+                    continue
+
+                source_file = root_path / file_name
+                if not source_file.is_file() or source_file.is_symlink():
+                    continue
+
+                target_file = current_target_dir / file_name
+                if file_name in PERSONAL_PROFILE_CLONE_SQLITE_FILES:
+                    self._copy_sqlite_database_snapshot(source_file, target_file)
+                else:
+                    target_file.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(source_file), str(target_file))
+
+    def _copy_seeded_profile_snapshot(self, source_profile_dir: Path, target_profile_dir: Path) -> None:
+        target_profile_dir.mkdir(parents=True, exist_ok=True)
+        copied_names: list[str] = []
+        for file_name in sorted(PERSONAL_PROFILE_CLONE_MINIMAL_PROFILE_FILES):
+            source_file = source_profile_dir / file_name
+            if not source_file.is_file():
+                continue
+            target_file = target_profile_dir / file_name
+            if file_name == "Cookies":
+                self._copy_sqlite_database_snapshot(source_file, target_file)
+            else:
+                shutil.copy2(str(source_file), str(target_file))
+            copied_names.append(file_name)
+
+        debug_logger.log_info(
+            "[BrowserCaptcha] 已复制可信 profile 最小快照文件: "
+            f"profile={source_profile_dir}, copied={copied_names}"
+        )
+
+    def _create_seeded_runtime_profile_dir(
+        self,
+        source_root_dir: Path,
+        source_profile_dir: Path,
+        *,
+        profile_directory_name: str,
+    ) -> str:
+        runtime_dir = self._create_fresh_runtime_profile_dir(prefix="trusted_browser_profile_")
+        runtime_root = Path(runtime_dir)
+
+        for file_name in PERSONAL_PROFILE_CLONE_ROOT_FILES:
+            source_file = source_root_dir / file_name
+            if source_file.is_file():
+                shutil.copy2(str(source_file), str(runtime_root / file_name))
+
+        target_profile_dir = runtime_root / profile_directory_name
+        self._copy_seeded_profile_snapshot(source_profile_dir, target_profile_dir)
+        self._effective_profile_directory_name = profile_directory_name
+        debug_logger.log_info(
+            "[BrowserCaptcha] 已从可信浏览器资料克隆 runtime profile: "
+            f"source={source_profile_dir} -> target={target_profile_dir}"
+        )
+        return runtime_dir
+
     def _resolve_user_data_dir(self, headless: Optional[bool] = None) -> Optional[str]:
         _ = self.headless if headless is None else bool(headless)
+        self._effective_profile_directory_name = None
         existing_runtime_profile = str(getattr(self, "_runtime_ephemeral_user_data_dir", "") or "").strip()
         if existing_runtime_profile:
             return os.path.normpath(existing_runtime_profile)
 
-        profile_override = os.environ.get("PERSONAL_BROWSER_USER_DATA_DIR", "").strip()
+        profile_directory_name = self._resolve_configured_personal_browser_profile_directory()
+        profile_override = self._resolve_configured_personal_browser_user_data_dir()
         if profile_override:
+            self._effective_profile_directory_name = profile_directory_name
             return os.path.normpath(profile_override)
+
+        profile_source_dir = self._resolve_configured_personal_browser_profile_source_dir()
+        if profile_source_dir:
+            try:
+                source_path = Path(profile_source_dir).expanduser().resolve()
+                source_profile_dir = source_path / profile_directory_name
+                source_root_dir = source_path
+                effective_profile_directory_name = profile_directory_name
+
+                if not source_profile_dir.is_dir() and self._looks_like_browser_profile_dir(source_path):
+                    source_profile_dir = source_path
+                    source_root_dir = source_path.parent
+                    effective_profile_directory_name = source_path.name
+
+                if source_profile_dir.is_dir() and self._looks_like_browser_profile_dir(source_profile_dir):
+                    return self._create_seeded_runtime_profile_dir(
+                        source_root_dir,
+                        source_profile_dir,
+                        profile_directory_name=effective_profile_directory_name,
+                    )
+
+                debug_logger.log_warning(
+                    "[BrowserCaptcha] 配置了可信 profile 源目录，但未找到可用 profile："
+                    f" source={source_path}, profile={profile_directory_name}"
+                )
+            except Exception as e:
+                debug_logger.log_warning(
+                    f"[BrowserCaptcha] 克隆可信 profile 失败，回退临时 profile: {e}"
+                )
 
         return self._create_fresh_runtime_profile_dir(prefix="browser_profile_")
 
@@ -2583,6 +2887,26 @@ class BrowserCaptchaService:
                     label="browser_health_probe",
                     timeout_seconds=3.0,
                 )
+            main_tab = getattr(self.browser, "main_tab", None)
+            if main_tab is not None:
+                try:
+                    current_url = str(
+                        await self._tab_evaluate(
+                            main_tab,
+                            "location.href || ''",
+                            label="browser.health_probe:url",
+                            timeout_seconds=2.0,
+                        )
+                        or ""
+                    ).strip()
+                except Exception:
+                    current_url = ""
+                if self._is_browser_error_url(current_url):
+                    self._mark_browser_health(False)
+                    debug_logger.log_warning(
+                        f"[BrowserCaptcha] 浏览器健康检查发现错误页: {current_url}"
+                    )
+                    return False
             self._mark_browser_health(True)
             return True
         except Exception as e:
@@ -2649,11 +2973,32 @@ class BrowserCaptchaService:
         return result
 
     async def _tab_get(self, tab, url: str, label: str, timeout_seconds: Optional[float] = None):
-        return await self._run_with_timeout(
+        result = await self._run_with_timeout(
             tab.get(url),
             timeout_seconds or self._navigation_timeout_seconds,
             label,
         )
+        normalized_url = str(url or "").strip().lower()
+        if normalized_url.startswith(("http://", "https://")):
+            current_url = ""
+            try:
+                current_url = str(
+                    await self._tab_evaluate(
+                        tab,
+                        "location.href || ''",
+                        label=f"{label}:post_get_url",
+                        timeout_seconds=2.0,
+                    )
+                    or ""
+                ).strip()
+            except Exception:
+                current_url = ""
+            if self._is_browser_error_url(current_url):
+                self._mark_browser_health(False)
+                raise RuntimeError(
+                    f"browser navigated to error page after get: target={url}, current={current_url or '<empty>'}"
+                )
+        return result
 
     async def _browser_get(
         self,
@@ -2688,6 +3033,32 @@ class BrowserCaptchaService:
             )
         return tab
 
+    def _build_runtime_fingerprint_identity(self) -> str:
+        configured_user_data_dir = self._resolve_configured_personal_browser_user_data_dir()
+        configured_profile_source_dir = self._resolve_configured_personal_browser_profile_source_dir()
+        configured_profile_directory = self._resolve_configured_personal_browser_profile_directory()
+        effective_profile_directory = str(
+            self._effective_profile_directory_name or configured_profile_directory or "Default"
+        ).strip() or "Default"
+
+        current_user_data_dir = str(self.user_data_dir or "").strip()
+        if current_user_data_dir and not self._is_runtime_managed_profile_dir(current_user_data_dir):
+            profile_anchor = os.path.normpath(current_user_data_dir)
+        elif configured_user_data_dir:
+            profile_anchor = os.path.normpath(configured_user_data_dir)
+        elif configured_profile_source_dir:
+            profile_anchor = os.path.normpath(configured_profile_source_dir)
+        else:
+            profile_anchor = f"profile-directory:{effective_profile_directory}"
+
+        identity_payload = {
+            "profile_anchor": profile_anchor,
+            "profile_directory": effective_profile_directory,
+            "proxy_config_signature": str(getattr(self, "_proxy_config_signature", "") or ""),
+            "headless": bool(self.headless),
+        }
+        return json.dumps(identity_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
     def _refresh_runtime_fingerprint_spoof_seed(
         self,
         *,
@@ -2695,10 +3066,7 @@ class BrowserCaptchaService:
         product: Optional[str] = None,
     ) -> None:
         self._runtime_fingerprint_spoof_seed = hashlib.sha256(
-            (
-                f"runtime:{time.time_ns()}:{os.getpid()}:"
-                f"{self._browser_instance_id}:{self.user_data_dir or '<isolated-temp>'}"
-            ).encode("utf-8")
+            f"runtime:{self._build_runtime_fingerprint_identity()}".encode("utf-8")
         ).hexdigest()
         self._runtime_surface_profile = self._build_runtime_surface_profile(
             user_agent=user_agent,
@@ -3106,7 +3474,7 @@ class BrowserCaptchaService:
         product: Optional[str] = None,
     ) -> Dict[str, Any]:
         seed_material = (
-            f"{self._runtime_fingerprint_spoof_seed}:{self._browser_instance_id}:runtime-surface"
+            f"{self._runtime_fingerprint_spoof_seed}:runtime-surface"
         ).encode("utf-8")
         digest = hashlib.sha256(seed_material).digest()
         full_version = self._parse_runtime_browser_version(user_agent, product)
@@ -5578,6 +5946,20 @@ class BrowserCaptchaService:
         attempts = [False, True] if prefer_new_tab else [True, False]
         last_error = None
 
+
+        if getattr(browser, "connection", None) is None:
+            debug_logger.log_warning(
+                f"[BrowserCaptcha] 浏览器主连接缺失，改用 browser.get 高层接口打开标签页 ({label})"
+            )
+            tab = await self._browser_get(
+                target_url,
+                label=f"{label}:browser_get_fallback",
+                new_tab=bool(prefer_new_tab),
+                new_window=not bool(prefer_new_tab),
+                timeout_seconds=timeout,
+            )
+            return tab
+
         for new_window in attempts:
             try:
                 target_id = await self._run_with_timeout(
@@ -5682,12 +6064,13 @@ class BrowserCaptchaService:
                 debug_logger.log_warning(
                     f"[BrowserCaptcha] 创建有头宿主窗口失败，将直接尝试打开目标标签页 ({label}): {e}"
                 )
-        return await self._create_default_context_target_tab(
+        tab = await self._create_default_context_target_tab(
             url,
             label=label,
             timeout_seconds=timeout_seconds,
             prefer_new_tab=has_page_targets,
         )
+        return tab
 
     async def _cleanup_startup_browser_pages(self):
         """关闭浏览器启动时自动弹出的默认页面，避免有头模式出现额外普通窗口。"""
@@ -6432,8 +6815,138 @@ class BrowserCaptchaService:
         except Exception as e:
             debug_logger.log_warning(f"[BrowserCaptcha] 读取 token cookie 失败 (token_id={token_key}): {e}")
             return None
-        cookie_text = str(getattr(token, "cookie", "") or "").strip() if token else ""
-        return cookie_text or None
+        if not token:
+            return None
+
+        cookie_text = normalize_cookie_storage_text(getattr(token, "cookie", None))
+        if cookie_text:
+            return cookie_text
+
+        # 兼容未迁移 `tokens.cookie` 列的老库：退回到 ST 组装 session cookie，
+        # 避免 resident token binding 在现网直接必败。
+        st_value = str(getattr(token, "st", "") or "").strip()
+        if not st_value:
+            return None
+        return f"__Secure-next-auth.session-token={st_value}"
+
+    @staticmethod
+    def _is_labs_next_auth_cookie(cookie: Dict[str, Any]) -> bool:
+        name = str(cookie.get("name") or "").strip()
+        if name not in {
+            "__Secure-next-auth.session-token",
+            "__Secure-next-auth.callback-url",
+            "__Host-next-auth.csrf-token",
+            "next-auth.session-token",
+        }:
+            return False
+
+        domain = str(cookie.get("domain") or "").strip().lower().lstrip(".")
+        if domain == "labs.google":
+            return True
+
+        url = str(cookie.get("url") or "").strip()
+        if url:
+            try:
+                host = str(urlparse(url).hostname or "").strip().lower()
+            except Exception:
+                host = ""
+            if host == "labs.google":
+                return True
+
+        return not domain and not url
+
+    def _strip_labs_next_auth_cookie_payload(self, raw_cookie: Any) -> str:
+        cookies = parse_browser_cookie_payload(raw_cookie)
+        if not cookies:
+            return ""
+
+        kept_cookies = [
+            cookie
+            for cookie in cookies
+            if not self._is_labs_next_auth_cookie(cookie)
+        ]
+        if not kept_cookies:
+            return ""
+        return json.dumps(kept_cookies, ensure_ascii=False, separators=(",", ":"))
+
+    async def _clear_stale_labs_next_auth_binding(
+        self,
+        resident_info: Optional[ResidentTabInfo],
+        token_id: Optional[int],
+        *,
+        label: str,
+    ) -> bool:
+        if resident_info is None or not resident_info.tab:
+            return False
+
+        browser_context_id = resident_info.browser_context_id or self._extract_tab_browser_context_id(
+            resident_info.tab
+        )
+        resident_info.browser_context_id = browser_context_id
+
+        stale_cookie_targets = [
+            {
+                "name": "__Secure-next-auth.session-token",
+                "value": "",
+                "url": "https://labs.google/",
+                "path": "/",
+                "secure": True,
+                "httpOnly": True,
+                "sameSite": "Lax",
+                "expires": 1,
+            },
+            {
+                "name": "__Secure-next-auth.callback-url",
+                "value": "",
+                "url": "https://labs.google/",
+                "path": "/",
+                "secure": True,
+                "sameSite": "Lax",
+                "expires": 1,
+            },
+            {
+                "name": "__Host-next-auth.csrf-token",
+                "value": "",
+                "url": "https://labs.google/",
+                "path": "/",
+                "secure": True,
+                "sameSite": "Lax",
+                "expires": 1,
+            },
+        ]
+
+        try:
+            cleared_count = await self._set_browser_cookie_targets(
+                stale_cookie_targets,
+                label=f"storage.set_cookies:{label}:clear_labs_next_auth",
+                browser_context_id=browser_context_id,
+                timeout_seconds=8.0,
+            )
+        except Exception as e:
+            debug_logger.log_warning(
+                f"[BrowserCaptcha] 清理 labs next-auth cookies 失败 (slot={resident_info.slot_id}, token_id={token_id}): {e}"
+            )
+            return False
+
+        if token_id is not None and self.db:
+            try:
+                token_snapshot = await self.db.get_token(int(token_id))
+                current_cookie_text = normalize_cookie_storage_text(getattr(token_snapshot, "cookie", None))
+                sanitized_cookie_text = self._strip_labs_next_auth_cookie_payload(current_cookie_text)
+                if sanitized_cookie_text != current_cookie_text:
+                    await self.db.update_token(int(token_id), cookie=sanitized_cookie_text)
+                    if resident_info.token_id == int(token_id):
+                        resident_info.cookie_signature = self._normalize_cookie_signature(sanitized_cookie_text)
+            except Exception as e:
+                debug_logger.log_warning(
+                    f"[BrowserCaptcha] 清理 token.cookie 中的 labs next-auth cookies 失败 (token_id={token_id}): {e}"
+                )
+
+        debug_logger.log_info(
+            f"[BrowserCaptcha] 已清理 stale labs next-auth 绑定 "
+            f"(slot={resident_info.slot_id}, token_id={token_id}, cookies={cleared_count})"
+        )
+        return True
 
     def _build_cdp_cookie_params(self, browser_cookies: Iterable[Dict[str, Any]]) -> list[Any]:
         from nodriver import cdp
@@ -6498,6 +7011,17 @@ class BrowserCaptchaService:
             return 0
 
         from nodriver import cdp
+
+        if getattr(self.browser, "connection", None) is None:
+            cookie_jar = getattr(self.browser, "cookies", None)
+            if cookie_jar is None:
+                raise RuntimeError("browser cookie jar unavailable while browser connection is missing")
+            await self._run_with_timeout(
+                cookie_jar.set_all(cookie_params),
+                timeout_seconds=timeout_seconds,
+                label=f"{label}:cookie_jar_set_all",
+            )
+            return len(cookie_params)
 
         if browser_context_id is None:
             cookie_command = cdp.storage.set_cookies(cookie_params)
@@ -6801,6 +7325,13 @@ class BrowserCaptchaService:
             return False
 
     @staticmethod
+    def _is_browser_error_url(url: str) -> bool:
+        normalized_url = str(url or "").strip().lower()
+        if not normalized_url:
+            return False
+        return normalized_url.startswith("chrome-error://chromewebdata/")
+
+    @staticmethod
     def _is_labs_bootstrap_url(url: str) -> bool:
         normalized_url = str(url or "").strip()
         if not normalized_url:
@@ -6814,6 +7345,13 @@ class BrowserCaptchaService:
         host = str(parsed.netloc or "").strip().lower()
         path = str(parsed.path or "").strip()
         return host == "labs.google" and path.rstrip("/") == "/fx/api/auth/providers"
+
+    @staticmethod
+    def _build_flow_project_url(project_id: str) -> str:
+        normalized_project_id = str(project_id or "").strip()
+        if normalized_project_id:
+            return f"https://labs.google/fx/zh/tools/flow/project/{normalized_project_id}"
+        return "https://labs.google/fx/zh/tools/flow"
 
     async def _open_labs_bootstrap_page(self, tab, *, label: str) -> bool:
         """在 cookie 绑定之后再首跳 labs.google，避免首轮 anchor/reload 丢 cookie。"""
@@ -6851,6 +7389,18 @@ class BrowserCaptchaService:
 
         async def _confirm_labs_surface(reason: str, *, stage: str) -> bool:
             current_url, ready_state = await _describe_surface(stage)
+            if self._is_browser_error_url(current_url):
+                self._mark_browser_health(False)
+                self._mark_fresh_profile_restart_pending(
+                    reason=f"labs_bootstrap_error_page:{label}:{stage}",
+                    force=True,
+                )
+                debug_logger.log_warning(
+                    "[BrowserCaptcha] labs 引导页落到浏览器错误页 "
+                    f"(label={label}, reason={reason}, url={current_url}, "
+                    f"ready_state={ready_state or '<empty>'})"
+                )
+                return False
             if self._is_labs_bootstrap_url(current_url) and ready_state in {"interactive", "complete"}:
                 debug_logger.log_warning(
                     "[BrowserCaptcha] labs 引导页命令超时，但页面已落到目标地址 "
@@ -6888,6 +7438,17 @@ class BrowserCaptchaService:
             return await _confirm_labs_surface("document_not_ready", stage="document_not_ready")
 
         current_url, ready_state = await _describe_surface("document_ready")
+        if self._is_browser_error_url(current_url):
+            self._mark_browser_health(False)
+            self._mark_fresh_profile_restart_pending(
+                reason=f"labs_bootstrap_error_page:{label}:document_ready",
+                force=True,
+            )
+            debug_logger.log_warning(
+                "[BrowserCaptcha] labs 引导页 ready 后落到浏览器错误页 "
+                f"(label={label}, url={current_url}, ready_state={ready_state or '<empty>'})"
+            )
+            return False
         if self._is_labs_bootstrap_url(current_url):
             debug_logger.log_info(
                 "[BrowserCaptcha] 已进入 labs 引导页 "
@@ -7024,8 +7585,25 @@ class BrowserCaptchaService:
             current_token_id == int(token_key)
             and current_cookie_signature == desired_cookie_signature
         ):
-            self._remember_token_affinity(int(token_key), resident_info.slot_id, resident_info)
-            return True
+            browser_context_id = resident_info.browser_context_id or self._extract_tab_browser_context_id(resident_info.tab)
+            resident_info.browser_context_id = browser_context_id
+            try:
+                bound_cookies = await self._get_browser_cookies(
+                    label=f"verify_resident_token_binding:{label}:{token_key}",
+                    browser_context_id=browser_context_id,
+                )
+            except Exception:
+                bound_cookies = []
+            if any(
+                str(getattr(cookie, "name", "") or "") == "__Secure-next-auth.session-token"
+                for cookie in bound_cookies
+            ):
+                self._remember_token_affinity(int(token_key), resident_info.slot_id, resident_info)
+                return True
+            debug_logger.log_warning(
+                f"[BrowserCaptcha] token_id={token_key} resident cookie 绑定缓存命中，但 context 中缺少 session cookie，准备重新绑定 "
+                f"(slot={resident_info.slot_id}, cookie_count={len(bound_cookies)})"
+            )
 
         if not desired_cookie_signature:
             if current_token_id == int(token_key) and not current_cookie_signature:
@@ -8106,6 +8684,11 @@ class BrowserCaptchaService:
     async def _resolve_personal_proxy(self):
         """Read proxy config for personal captcha browser.
         Priority: captcha browser_proxy > request proxy."""
+        if _env_truthy("PERSONAL_BROWSER_DISABLE_PROXY"):
+            debug_logger.log_warning(
+                "[BrowserCaptcha] PERSONAL_BROWSER_DISABLE_PROXY 已启用，跳过 personal 浏览器代理配置"
+            )
+            return None, None, None, None, None
         if not self.db:
             return None, None, None, None, None
         try:
@@ -8114,13 +8697,23 @@ class BrowserCaptchaService:
             if browser_proxy_pool:
                 pooled_proxy = await self.db.pick_browser_proxy_from_pool()
                 if pooled_proxy:
-                    debug_logger.log_info(f"[BrowserCaptcha] Personal 使用验证码代理池: {pooled_proxy}")
-                    return _parse_proxy_url(pooled_proxy)
+                    proxy_tuple = await self._validate_personal_proxy_candidate(
+                        *_parse_proxy_url(pooled_proxy),
+                        source="captcha proxy pool",
+                    )
+                    if proxy_tuple:
+                        debug_logger.log_info("[BrowserCaptcha] Personal 使用验证码代理池")
+                        return proxy_tuple
             if getattr(captcha_cfg, "browser_proxy_enabled", False) and getattr(captcha_cfg, "browser_proxy_url", None):
                 url = str(getattr(captcha_cfg, "browser_proxy_url", "") or "").strip()
                 if url:
-                    debug_logger.log_info(f"[BrowserCaptcha] Personal 使用验证码代理: {url}")
-                    return _parse_proxy_url(url)
+                    proxy_tuple = await self._validate_personal_proxy_candidate(
+                        *_parse_proxy_url(url),
+                        source="captcha proxy",
+                    )
+                    if proxy_tuple:
+                        debug_logger.log_info("[BrowserCaptcha] Personal 使用验证码代理")
+                        return proxy_tuple
         except Exception as e:
             debug_logger.log_warning(f"[BrowserCaptcha] 读取验证码代理配置失败: {e}")
         try:
@@ -8129,30 +8722,67 @@ class BrowserCaptchaService:
             proxy_pool_candidates = [item.strip() for item in re.split(r"[\r\n,]+", proxy_pool_text) if item.strip()]
             if proxy_cfg and proxy_cfg.enabled and proxy_pool_candidates:
                 pooled_proxy = proxy_pool_candidates[0]
-                debug_logger.log_info(f"[BrowserCaptcha] Personal 回退使用请求代理池: {pooled_proxy}")
-                return _parse_proxy_url(pooled_proxy)
+                proxy_tuple = await self._validate_personal_proxy_candidate(
+                    *_parse_proxy_url(pooled_proxy),
+                    source="request proxy pool",
+                )
+                if proxy_tuple:
+                    debug_logger.log_info("[BrowserCaptcha] Personal 回退使用请求代理池")
+                    return proxy_tuple
             if proxy_cfg and proxy_cfg.enabled and proxy_cfg.proxy_url:
                 url = proxy_cfg.proxy_url.strip()
                 if url:
-                    debug_logger.log_info(f"[BrowserCaptcha] Personal 回退使用请求代理: {url}")
-                    return _parse_proxy_url(url)
+                    proxy_tuple = await self._validate_personal_proxy_candidate(
+                        *_parse_proxy_url(url),
+                        source="request proxy",
+                    )
+                    if proxy_tuple:
+                        debug_logger.log_info("[BrowserCaptcha] Personal 回退使用请求代理")
+                        return proxy_tuple
         except Exception as e:
             debug_logger.log_warning(f"[BrowserCaptcha] 读取请求代理配置失败: {e}")
 
         for candidate_url in _read_windows_internet_settings_proxy_candidates():
-            protocol, host, port, username, password = _parse_proxy_url(candidate_url)
-            if not protocol or not host or not port:
+            parsed_proxy = _parse_proxy_url(candidate_url)
+            if str(parsed_proxy[1] or "").strip().lower() not in {"127.0.0.1", "localhost", "::1"}:
                 continue
-            if str(host).strip().lower() not in {"127.0.0.1", "localhost", "::1"}:
-                continue
-            if not await self._is_tcp_endpoint_reachable(str(host), int(port), timeout_seconds=0.5):
-                continue
-            debug_logger.log_info(
-                f"[BrowserCaptcha] Personal 自动接管本机可用代理: {candidate_url}"
+            proxy_tuple = await self._validate_personal_proxy_candidate(
+                *parsed_proxy,
+                source="windows internet settings proxy",
             )
-            return protocol, host, port, username, password
+            if proxy_tuple:
+                debug_logger.log_info("[BrowserCaptcha] Personal 自动接管本机可用代理")
+                return proxy_tuple
 
         return None, None, None, None, None
+
+    async def _validate_personal_proxy_candidate(
+        self,
+        protocol: Optional[str],
+        host: Optional[str],
+        port: Optional[str],
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        *,
+        source: str,
+    ) -> Optional[tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]]:
+        if not protocol or not host or not port:
+            debug_logger.log_warning(
+                f"[BrowserCaptcha] 跳过无效 personal 代理配置 ({source})"
+            )
+            return None
+
+        try:
+            reachable = await self._is_tcp_endpoint_reachable(str(host), int(port), timeout_seconds=1.0)
+        except Exception:
+            reachable = False
+        if not reachable:
+            debug_logger.log_warning(
+                f"[BrowserCaptcha] 跳过不可达 personal 代理 ({source}): {host}:{port}"
+            )
+            return None
+
+        return protocol, host, port, username, password
 
     async def _is_tcp_endpoint_reachable(
         self,
@@ -8917,6 +9547,7 @@ class BrowserCaptchaService:
                     protocol, host, port, username, password = await self._resolve_personal_proxy()
                     self._proxy_config_signature = await self._build_proxy_config_signature()
                     proxy_server_arg = None
+                    preserve_profile_state = bool(self._effective_profile_directory_name)
                     if protocol and host and port:
                         if username and password:
                             self._proxy_ext_dir = _create_proxy_auth_extension(protocol, host, port, username, password)
@@ -8935,11 +9566,18 @@ class BrowserCaptchaService:
                         headless=self.headless,
                         proxy_server_arg=proxy_server_arg,
                         proxy_extension_dir=self._proxy_ext_dir,
+                        preserve_profile_state=preserve_profile_state,
+                        profile_directory=self._effective_profile_directory_name,
                     )
                     if self._requires_virtual_display():
                         browser_args = _tune_personal_browser_args_for_docker_headed(browser_args)
                         debug_logger.log_info(
                             "[BrowserCaptcha] Docker headed 指纹优化已启用，已收敛明显的容器化启动参数"
+                        )
+                    elif browser_source in {"configured", "detected"}:
+                        browser_args = _tune_personal_browser_args_for_desktop_real_browser(browser_args)
+                        debug_logger.log_info(
+                            "[BrowserCaptcha] 宿主机真实浏览器保守参数已启用，已移除高风险网络/隔离启动参数"
                         )
                     if self._requires_virtual_display() and '--no-startup-window' in browser_args:
                         browser_args = [
@@ -9944,6 +10582,7 @@ class BrowserCaptchaService:
         else:
             debug_logger.log_warning("[BrowserCaptcha] Token 获取失败，交由上层执行标签页恢复")
 
+
         return token
 
     async def _execute_custom_recaptcha_on_tab(
@@ -10156,7 +10795,7 @@ class BrowserCaptchaService:
         """从 nodriver 标签页提取浏览器指纹信息。"""
         try:
             fingerprint = await self._tab_evaluate(tab, """
-                () => {
+                (() => {
                     const ua = navigator.userAgent || "";
                     const lang = navigator.language || "";
                     const languages = Array.isArray(navigator.languages) ? navigator.languages.slice() : [];
@@ -10196,8 +10835,8 @@ class BrowserCaptchaService:
                         screen_avail_width: Number(screen.availWidth || 0),
                         screen_avail_height: Number(screen.availHeight || 0),
                     };
-                }
-            """, label="extract_tab_fingerprint", timeout_seconds=8.0)
+                })()
+            """, label="extract_tab_fingerprint", timeout_seconds=8.0, return_by_value=True)
             if not isinstance(fingerprint, dict):
                 return None
 
@@ -10268,6 +10907,12 @@ class BrowserCaptchaService:
     ) -> Optional[str]:
         """在共享常驻标签页上执行一次打码，并统一更新成功态。"""
         if not resident_info or not resident_info.tab or not resident_info.recaptcha_ready:
+            debug_logger.log_warning(
+                "[BrowserCaptcha] resident solve skipped because tab is not ready "
+                f"(slot={slot_id}, project={project_id}, action={action}, "
+                f"has_tab={bool(getattr(resident_info, 'tab', None))}, "
+                f"recaptcha_ready={bool(getattr(resident_info, 'recaptcha_ready', False))})"
+            )
             if consume_reservation:
                 await self._release_resident_slot_reservation(slot_id, resident_info=resident_info)
             return None
@@ -10283,6 +10928,11 @@ class BrowserCaptchaService:
             )
 
         if not token:
+            debug_logger.log_warning(
+                f"[BrowserCaptcha] resident solve returned empty token "
+                f"(slot={slot_id}, project={project_id}, action={action}, "
+                f"use_count={int(getattr(resident_info, 'use_count', 0) or 0)})"
+            )
             return None
 
         duration_ms = (time.time() - start_time) * 1000
@@ -10513,7 +11163,8 @@ class BrowserCaptchaService:
                     if token:
                         return finish_result(token, slot_id)
                     debug_logger.log_warning(
-                        f"[BrowserCaptcha] 共享标签页生成失败 (slot={slot_id}, project={project_id}, token_id={token_id})，尝试重建..."
+                        f"[BrowserCaptcha] 共享标签页生成失败 "
+                        f"(slot={slot_id}, project={project_id}, token_id={token_id}, action={action})，尝试重建..."
                     )
                     await self._mark_resident_slot_unavailable(
                         slot_id,
@@ -10522,7 +11173,10 @@ class BrowserCaptchaService:
                     )
                 except Exception as e:
                     reserved_slot_id = None
-                    debug_logger.log_warning(f"[BrowserCaptcha] 共享标签页异常 (slot={slot_id}): {e}，尝试重建...")
+                    debug_logger.log_warning(
+                        f"[BrowserCaptcha] 共享标签页异常 "
+                        f"(slot={slot_id}, project={project_id}, token_id={token_id}, action={action}): {e}，尝试重建..."
+                    )
                     await self._mark_resident_slot_unavailable(
                         slot_id,
                         resident_info,
@@ -10599,13 +11253,15 @@ class BrowserCaptchaService:
                                 debug_logger.log_info(f"[BrowserCaptcha] ✅ 重建后 Token生成成功 (slot={slot_id})")
                                 return finish_result(token, slot_id)
                             debug_logger.log_warning(
-                                f"[BrowserCaptcha] 重建标签页后未拿到 token (slot={slot_id})，准备执行二次恢复"
+                                f"[BrowserCaptcha] 重建标签页后未拿到 token "
+                                f"(slot={slot_id}, project={project_id}, token_id={token_id}, action={action})，准备执行二次恢复"
                             )
                             needs_secondary_rebuild = True
                         except Exception as rebuild_error:
                             reserved_slot_id = None
                             debug_logger.log_warning(
-                                f"[BrowserCaptcha] 重建标签页后仍无法打码 (slot={slot_id}): {rebuild_error}"
+                                f"[BrowserCaptcha] 重建标签页后仍无法打码 "
+                                f"(slot={slot_id}, project={project_id}, token_id={token_id}, action={action}): {rebuild_error}"
                             )
                             needs_secondary_rebuild = True
                             if self._is_browser_runtime_error(rebuild_error):
@@ -10633,7 +11289,8 @@ class BrowserCaptchaService:
                                         except Exception as restart_error:
                                             reserved_slot_id = None
                                             debug_logger.log_warning(
-                                                f"[BrowserCaptcha] 浏览器重启后 resident 仍失败 (slot={slot_id}): {restart_error}"
+                                                f"[BrowserCaptcha] 浏览器重启后 resident 仍失败 "
+                                                f"(slot={slot_id}, project={project_id}, token_id={token_id}, action={action}): {restart_error}"
                                             )
                         if needs_secondary_rebuild and slot_id and resident_info:
                             await self._mark_resident_slot_unavailable(
@@ -10672,7 +11329,8 @@ class BrowserCaptchaService:
                                 except Exception as second_rebuild_error:
                                     reserved_slot_id = None
                                     debug_logger.log_warning(
-                                        f"[BrowserCaptcha] 二次重建后 resident 仍失败 (slot={slot_id}): {second_rebuild_error}"
+                                        f"[BrowserCaptcha] 二次重建后 resident 仍失败 "
+                                        f"(slot={slot_id}, project={project_id}, token_id={token_id}, action={action}): {second_rebuild_error}"
                                     )
                     elif not await self._probe_browser_runtime():
                         if await self._recover_browser_runtime(project_id, reason=f"resident_rebuild_empty:{slot_id}"):
@@ -10699,13 +11357,20 @@ class BrowserCaptchaService:
                                 except Exception as empty_recover_error:
                                     reserved_slot_id = None
                                     debug_logger.log_warning(
-                                        f"[BrowserCaptcha] 浏览器空恢复后 resident 仍失败 (slot={slot_id}): {empty_recover_error}"
+                                        f"[BrowserCaptcha] 浏览器空恢复后 resident 仍失败 "
+                                        f"(slot={slot_id}, project={project_id}, token_id={token_id}, action={action}): {empty_recover_error}"
                                     )
 
             debug_logger.log_warning(
-                f"[BrowserCaptcha] 所有常驻方式失败，fallback 到传统模式 (project: {project_id}, token_id={token_id})"
+                f"[BrowserCaptcha] 所有常驻方式失败，fallback 到传统模式 "
+                f"(project: {project_id}, token_id={token_id}, action={action})"
             )
             legacy_token = await self._get_token_legacy(project_id, action, token_id=token_id)
+            if not legacy_token:
+                debug_logger.log_warning(
+                    f"[BrowserCaptcha] legacy 模式也未拿到 token "
+                    f"(project={project_id}, token_id={token_id}, action={action})"
+                )
             if legacy_token and slot_id:
                 self._resident_error_streaks.pop(slot_id, None)
             return finish_result(legacy_token, None)
@@ -11036,6 +11701,696 @@ class BrowserCaptchaService:
             return None
         return dict(self._last_fingerprint)
 
+    async def get_fingerprint(self, browser_ref: Optional[Union[int, str]]) -> Optional[Dict[str, Any]]:
+        """根据 resident slot 返回最近一次成功打码时的指纹快照。"""
+        normalized_slot_id = str(browser_ref or "").strip()
+        if normalized_slot_id:
+            async with self._resident_lock:
+                resident_info = self._resident_tabs.get(normalized_slot_id)
+                if resident_info and isinstance(resident_info.fingerprint, dict) and resident_info.fingerprint:
+                    return dict(resident_info.fingerprint)
+        return self.get_last_fingerprint()
+
+    async def submit_json_via_browser(
+        self,
+        browser_ref: Optional[Union[int, str]],
+        url: str,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        timeout_seconds: int = 75,
+        referer_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """通过 personal resident tab 所在浏览器上下文发起视频 submit。"""
+        normalized_slot_id = str(browser_ref or "").strip()
+        if not normalized_slot_id:
+            raise RuntimeError("invalid browser_ref")
+
+        async with self._resident_lock:
+            resident_info = self._resident_tabs.get(normalized_slot_id)
+        if resident_info is None or resident_info.tab is None:
+            raise RuntimeError(f"resident slot {normalized_slot_id} not found")
+
+        target_url = str(referer_url or LABS_URL or "https://labs.google/fx").strip()
+        browser_fetch_headers: Dict[str, str] = {}
+        for raw_key, raw_value in dict(headers or {}).items():
+            key = str(raw_key or "").strip()
+            if not key:
+                continue
+            lower_key = key.lower()
+            if lower_key in {
+                "authorization",
+                "content-type",
+                "accept",
+                "x-client-data",
+                "x-browser-validation",
+                "x-goog-api-client",
+                "x-goog-authuser",
+            }:
+                browser_fetch_headers[key] = str(raw_value)
+        async with resident_info.solve_lock:
+            try:
+                current_url = str(
+                    await self._tab_evaluate(
+                        resident_info.tab,
+                        "location.href || ''",
+                        label=f"personal_submit_surface:{normalized_slot_id}:url",
+                        timeout_seconds=2.0,
+                    )
+                    or ""
+                ).strip()
+            except Exception:
+                current_url = ""
+
+            normalized_target_url = target_url.rstrip("/")
+            normalized_current_url = current_url.rstrip("/")
+            if not normalized_current_url.startswith(normalized_target_url):
+                await self._tab_get(
+                    resident_info.tab,
+                    target_url,
+                    label=f"personal_submit_surface:{normalized_slot_id}:goto",
+                    timeout_seconds=min(float(timeout_seconds or 75), 20.0),
+                )
+            try:
+                current_url_after_goto = str(
+                    await self._tab_evaluate(
+                        resident_info.tab,
+                        "location.href || ''",
+                        label=f"personal_submit_surface:{normalized_slot_id}:url_after_goto",
+                        timeout_seconds=2.0,
+                    )
+                    or ""
+                ).strip()
+            except Exception:
+                current_url_after_goto = ""
+
+            settle_href = ""
+            settle_title = ""
+            settle_ready_state = ""
+            settle_body_prefix = ""
+            settle_local_storage_keys: list[str] = []
+            settle_cookie_banner_clicked = ""
+            settle_bootstrap_action = ""
+            settle_has_flow_prompt_state = False
+            settle_prompt_mode = ""
+            settle_selected_video_model_family = ""
+            settle_has_cookie_consent = False
+            settle_has_textbox = False
+            settle_visible_buttons: list[str] = []
+            settle_recovery_attempted = False
+            settle_recovery_action = ""
+            settle_eval_error = ""
+            settle_iterations = 0
+            settle_fallback_used = False
+            is_video_submit = "video:" in str(url or "")
+            settle_deadline = time.time() + 18.0
+            while True:
+                settle_iterations += 1
+                pre_settle_bootstrap_action = ""
+                if is_video_submit:
+                    try:
+                        pre_settle_bootstrap_action = str(
+                            await self._tab_evaluate(
+                                resident_info.tab,
+                                """
+                                (() => {
+                                    try {
+                                        const rawPromptState = String(window.localStorage.getItem("FLOW_MAIN_PROMPT_BOX_STATE") || "");
+                                        let promptMode = "";
+                                        let selectedVideoModelFamily = "";
+                                        if (rawPromptState) {
+                                            try {
+                                                const parsed = JSON.parse(rawPromptState);
+                                                promptMode = String((parsed && parsed.imageOrVideoMode) || "");
+                                                selectedVideoModelFamily = String((parsed && parsed.selectedVideoModelFamily) || "");
+                                            } catch (error) {
+                                                promptMode = "";
+                                                selectedVideoModelFamily = "";
+                                            }
+                                        }
+                                        const visible = (el) => {
+                                            const rect = el.getBoundingClientRect();
+                                            return rect.width > 8 && rect.height > 8;
+                                        };
+                                        const textOf = (el) => String(
+                                            el.innerText || el.textContent || el.getAttribute("aria-label") || ""
+                                        ).replace(/\\s+/g, " ").trim();
+                                        const clickFirstButton = (predicates, label) => {
+                                            for (const button of Array.from(document.querySelectorAll("button"))) {
+                                                if (!visible(button)) {
+                                                    continue;
+                                                }
+                                                const text = textOf(button);
+                                                if (!text) {
+                                                    continue;
+                                                }
+                                                if (predicates.some((predicate) => predicate(text))) {
+                                                    button.click();
+                                                    return `${label}:${text.slice(0, 80)}`;
+                                                }
+                                            }
+                                            return "";
+                                        };
+                                        if (promptMode === "IMAGE") {
+                                            if (rawPromptState) {
+                                                try {
+                                                    const parsed = JSON.parse(rawPromptState);
+                                                    parsed.imageOrVideoMode = "VIDEO_REFERENCES";
+                                                    if (!parsed.selectedVideoDuration) {
+                                                        parsed.selectedVideoDuration = 4;
+                                                    }
+                                                    if (!parsed.outputsPerPrompt || Number(parsed.outputsPerPrompt) > 1) {
+                                                        parsed.outputsPerPrompt = 1;
+                                                    }
+                                                    window.localStorage.setItem(
+                                                        "FLOW_MAIN_PROMPT_BOX_STATE",
+                                                        JSON.stringify(parsed),
+                                                    );
+                                                    return "patch:prompt-state:VIDEO_REFERENCES";
+                                                } catch (error) {
+                                                    // Fall through to DOM nudges below.
+                                                }
+                                            }
+                                            const modelToggleClick = clickFirstButton(
+                                                [
+                                                    (text) => text.includes("视频 ·"),
+                                                    (text) => text.includes("图片 ·"),
+                                                    (text) => text.includes("Veo 3.1"),
+                                                    (text) => selectedVideoModelFamily && text.toLowerCase().includes(selectedVideoModelFamily.toLowerCase()),
+                                                ],
+                                                "click:model-toggle",
+                                            );
+                                            if (modelToggleClick) {
+                                                return modelToggleClick;
+                                            }
+                                            const videoTabClick = clickFirstButton(
+                                                [
+                                                    (text) => text.includes("观看视频"),
+                                                    (text) => text === "视频",
+                                                    (text) => text.startsWith("videocam"),
+                                                ],
+                                                "click:video-tab",
+                                            );
+                                            if (videoTabClick) {
+                                                return videoTabClick;
+                                            }
+                                        }
+                                    } catch (error) {
+                                        return `prepatch-error:${String((error && error.message) || error || "")}`;
+                                    }
+                                    return "";
+                                })()
+                                """,
+                                label=f"personal_submit_surface:{normalized_slot_id}:video_mode_prepass",
+                                timeout_seconds=2.0,
+                                return_by_value=True,
+                            )
+                            or ""
+                        ).strip()
+                    except Exception as bootstrap_error:
+                        pre_settle_bootstrap_action = (
+                            f"prepass-error:{type(bootstrap_error).__name__}"
+                        )
+                try:
+                    settle_surface = await self._tab_evaluate(
+                        resident_info.tab,
+                        """
+                        (() => ({
+                            clickedBannerText: (() => {
+                                try {
+                                    const visible = (el) => {
+                                        const rect = el.getBoundingClientRect();
+                                        return rect.width > 8 && rect.height > 8;
+                                    };
+                                    const textOf = (el) => String(
+                                        el.innerText || el.textContent || el.getAttribute("aria-label") || ""
+                                    ).replace(/\\s+/g, " ").trim();
+                                    for (const button of Array.from(document.querySelectorAll("button"))) {
+                                        if (!visible(button)) {
+                                            continue;
+                                        }
+                                        const text = textOf(button);
+                                        if (!text) {
+                                            continue;
+                                        }
+                                        if (
+                                            text.includes("OK, got it")
+                                            || text.includes("Agree")
+                                            || text.includes("知道了")
+                                            || text.includes("同意")
+                                        ) {
+                                            button.click();
+                                            return text;
+                                        }
+                                    }
+                                } catch (error) {
+                                    return `click-error:${String((error && error.message) || error || "")}`;
+                                }
+                                return "";
+                            })(),
+                            href: String(location.href || ""),
+                            title: String(document.title || ""),
+                            readyState: String(document.readyState || ""),
+                            bodyTextPrefix: String((document.body && document.body.innerText) || "").slice(0, 300),
+                            localStorageKeys: (() => {
+                                try {
+                                    const keys = [];
+                                    const total = Number(window.localStorage && window.localStorage.length) || 0;
+                                    for (let i = 0; i < total; i++) {
+                                        const key = String(window.localStorage.key(i) || "");
+                                        if (key) {
+                                            keys.push(key);
+                                        }
+                                    }
+                                    return keys.slice(0, 20);
+                                } catch (error) {
+                                    return [`localStorage-error:${String((error && error.message) || error || "")}`];
+                                }
+                            })(),
+                            hasFlowPromptState: (() => {
+                                try {
+                                    return !!String(window.localStorage.getItem("FLOW_MAIN_PROMPT_BOX_STATE") || "");
+                                } catch (error) {
+                                    return false;
+                                }
+                            })(),
+                            promptMode: (() => {
+                                try {
+                                    const raw = String(window.localStorage.getItem("FLOW_MAIN_PROMPT_BOX_STATE") || "");
+                                    if (!raw) {
+                                        return "";
+                                    }
+                                    const parsed = JSON.parse(raw);
+                                    return String((parsed && parsed.imageOrVideoMode) || "");
+                                } catch (error) {
+                                    return "";
+                                }
+                            })(),
+                            selectedVideoModelFamily: (() => {
+                                try {
+                                    const raw = String(window.localStorage.getItem("FLOW_MAIN_PROMPT_BOX_STATE") || "");
+                                    if (!raw) {
+                                        return "";
+                                    }
+                                    const parsed = JSON.parse(raw);
+                                    return String((parsed && parsed.selectedVideoModelFamily) || "");
+                                } catch (error) {
+                                    return "";
+                                }
+                            })(),
+                            bootstrapAction: "",
+                            hasCookieConsent: (() => {
+                                try {
+                                    return !!String(window.localStorage.getItem("glue.CookieNotificationBar") || "");
+                                } catch (error) {
+                                    return false;
+                                }
+                            })(),
+                            hasTextbox: (() => {
+                                try {
+                                    return !!document.querySelector('[role="textbox"][contenteditable="true"]');
+                                } catch (error) {
+                                    return false;
+                                }
+                            })(),
+                            visibleButtons: (() => {
+                                try {
+                                    const visible = (el) => {
+                                        const rect = el.getBoundingClientRect();
+                                        return rect.width > 8 && rect.height > 8;
+                                    };
+                                    const textOf = (el) => String(
+                                        el.innerText || el.textContent || el.getAttribute("aria-label") || ""
+                                    ).replace(/\\s+/g, " ").trim();
+                                    return Array.from(document.querySelectorAll("button"))
+                                        .filter(visible)
+                                        .map(textOf)
+                                        .filter(Boolean)
+                                        .slice(0, 20);
+                                } catch (error) {
+                                    return [`buttons-error:${String((error && error.message) || error || "")}`];
+                                }
+                            })(),
+                        }))()
+                        """,
+                        label=f"personal_submit_surface:{normalized_slot_id}:settle",
+                        timeout_seconds=4.0,
+                        return_by_value=True,
+                    )
+                    settle_eval_error = ""
+                except Exception as settle_error:
+                    settle_surface = {}
+                    settle_eval_error = (
+                        f"{type(settle_error).__name__}: {str(settle_error)[:240]}"
+                    )
+
+                if not isinstance(settle_surface, dict):
+                    try:
+                        fallback_surface = await self._tab_evaluate(
+                            resident_info.tab,
+                            """
+                            (() => ({
+                                href: String(location.href || ""),
+                                title: String(document.title || ""),
+                                readyState: String(document.readyState || ""),
+                                bodyTextPrefix: String((document.body && document.body.innerText) || "").slice(0, 300),
+                                localStorageKeys: (() => {
+                                    try {
+                                        const keys = [];
+                                        const total = Number(window.localStorage && window.localStorage.length) || 0;
+                                        for (let i = 0; i < total; i++) {
+                                            const key = String(window.localStorage.key(i) || "");
+                                            if (key) {
+                                                keys.push(key);
+                                            }
+                                        }
+                                        return keys.slice(0, 10);
+                                    } catch (error) {
+                                        return [];
+                                    }
+                                })(),
+                                hasFlowPromptState: (() => {
+                                    try {
+                                        return !!String(window.localStorage.getItem("FLOW_MAIN_PROMPT_BOX_STATE") || "");
+                                    } catch (error) {
+                                        return false;
+                                    }
+                                })(),
+                                promptMode: (() => {
+                                    try {
+                                        const raw = String(window.localStorage.getItem("FLOW_MAIN_PROMPT_BOX_STATE") || "");
+                                        if (!raw) return "";
+                                        const parsed = JSON.parse(raw);
+                                        return String((parsed && parsed.imageOrVideoMode) || "");
+                                    } catch (error) {
+                                        return "";
+                                    }
+                                })(),
+                                selectedVideoModelFamily: (() => {
+                                    try {
+                                        const raw = String(window.localStorage.getItem("FLOW_MAIN_PROMPT_BOX_STATE") || "");
+                                        if (!raw) return "";
+                                        const parsed = JSON.parse(raw);
+                                        return String((parsed && parsed.selectedVideoModelFamily) || "");
+                                    } catch (error) {
+                                        return "";
+                                    }
+                                })(),
+                            }))()
+                            """,
+                            label=f"personal_submit_surface:{normalized_slot_id}:settle_fallback",
+                            timeout_seconds=2.5,
+                            return_by_value=True,
+                        )
+                        if isinstance(fallback_surface, dict):
+                            settle_surface = fallback_surface
+                            settle_fallback_used = True
+                        elif not settle_eval_error:
+                            settle_eval_error = (
+                                f"non_dict:{type(fallback_surface).__name__}"
+                            )
+                    except Exception as fallback_error:
+                        if not settle_eval_error:
+                            settle_eval_error = (
+                                f"fallback:{type(fallback_error).__name__}: {str(fallback_error)[:240]}"
+                            )
+
+                if isinstance(settle_surface, dict):
+                    settle_href = str(settle_surface.get("href") or "").strip()
+                    settle_title = str(settle_surface.get("title") or "").strip()
+                    settle_ready_state = str(settle_surface.get("readyState") or "").strip().lower()
+                    settle_body_prefix = str(settle_surface.get("bodyTextPrefix") or "")
+                    settle_cookie_banner_clicked = str(settle_surface.get("clickedBannerText") or "").strip()
+                    settle_bootstrap_action = str(settle_surface.get("bootstrapAction") or "").strip()
+                    settle_local_storage_keys = [
+                        str(item or "").strip()
+                        for item in list(settle_surface.get("localStorageKeys") or [])
+                        if str(item or "").strip()
+                    ][:20]
+                    settle_has_flow_prompt_state = bool(settle_surface.get("hasFlowPromptState"))
+                    settle_prompt_mode = str(settle_surface.get("promptMode") or "").strip()
+                    settle_selected_video_model_family = str(
+                        settle_surface.get("selectedVideoModelFamily") or ""
+                    ).strip()
+                    if pre_settle_bootstrap_action:
+                        settle_bootstrap_action = pre_settle_bootstrap_action[:160]
+                    settle_has_cookie_consent = bool(settle_surface.get("hasCookieConsent"))
+                    settle_has_textbox = bool(settle_surface.get("hasTextbox"))
+                    settle_visible_buttons = [
+                        str(item or "").strip()
+                        for item in list(settle_surface.get("visibleButtons") or [])
+                        if str(item or "").strip()
+                    ][:20]
+
+                page_bootstrapped = (
+                    settle_has_flow_prompt_state
+                    or settle_has_textbox
+                    or bool(settle_visible_buttons)
+                    or ("您希望创作什么内容" in settle_body_prefix)
+                    or ("创建" in settle_body_prefix)
+                )
+                page_video_mode_ready = (
+                    (not is_video_submit)
+                    or settle_prompt_mode in {"VIDEO", "VIDEO_REFERENCES"}
+                )
+                page_stable = (
+                    settle_href.rstrip("/").startswith(normalized_target_url)
+                    and settle_ready_state in {"interactive", "complete"}
+                    and "正在加载" not in settle_body_prefix
+                    and "loading" not in settle_body_prefix.lower()
+                    and page_bootstrapped
+                    and page_video_mode_ready
+                )
+                if page_stable:
+                    break
+                if time.time() >= settle_deadline:
+                    if not settle_recovery_attempted:
+                        settle_recovery_attempted = True
+                        recovery_steps: list[str] = []
+                        try:
+                            await self._tab_evaluate(
+                                resident_info.tab,
+                                "location.reload()",
+                                label=f"personal_submit_surface:{normalized_slot_id}:reload",
+                                timeout_seconds=2.0,
+                            )
+                            recovery_steps.append("reload")
+                        except Exception as reload_error:
+                            recovery_steps.append(
+                                f"reload_error:{type(reload_error).__name__}"
+                            )
+                        try:
+                            await self._tab_get(
+                                resident_info.tab,
+                                target_url,
+                                label=f"personal_submit_surface:{normalized_slot_id}:recovery_goto",
+                                timeout_seconds=20.0,
+                            )
+                            recovery_steps.append("goto")
+                        except Exception as goto_error:
+                            recovery_steps.append(
+                                f"goto_error:{type(goto_error).__name__}"
+                            )
+                        settle_recovery_action = "|".join(recovery_steps)[:160]
+                        settle_deadline = time.time() + 12.0
+                        await asyncio.sleep(0.8)
+                        continue
+                    break
+                await asyncio.sleep(0.4)
+
+            result = await self._tab_evaluate(
+                resident_info.tab,
+                f"""
+                (async () => {{
+                    const submitUrl = {json.dumps(str(url or ""), ensure_ascii=True)};
+                    const submitHeaders = {json.dumps(browser_fetch_headers, ensure_ascii=True)};
+                    const submitPayload = {json.dumps(payload or {{}}, ensure_ascii=False)};
+                    const submitReferer = {json.dumps(target_url, ensure_ascii=True)};
+                    const summarizeStorage = (storage) => {{
+                        const summary = {{
+                            keyCount: 0,
+                            keys: [],
+                            interesting: {{}},
+                        }};
+                        try {{
+                            const preferredKeys = new Set([
+                                "_grecaptcha",
+                                "glue.CookieNotificationBar",
+                                "FLOW_MAIN_PROMPT_BOX_STATE",
+                                "FLOW_QUICK_SEARCH_MODE",
+                                "nextauth.message",
+                            ]);
+                            const total = Number(storage && storage.length) || 0;
+                            summary.keyCount = total;
+                            for (let i = 0; i < total; i++) {{
+                                const key = String(storage.key(i) || "");
+                                if (!key) {{
+                                    continue;
+                                }}
+                                if (summary.keys.length < 20) {{
+                                    summary.keys.push(key);
+                                }}
+                                if (preferredKeys.has(key)) {{
+                                    summary.interesting[key] = String(storage.getItem(key) || "").slice(0, 240);
+                                }}
+                            }}
+                        }} catch (error) {{
+                            summary.error = String((error && error.message) || error || "");
+                        }}
+                        return summary;
+                    }};
+                    const collectRuntimeSummary = async () => {{
+                        const indexedDbSummary = {{ supported: typeof indexedDB !== "undefined", databases: [] }};
+                        try {{
+                            if (indexedDB && typeof indexedDB.databases === "function") {{
+                                const dbs = await indexedDB.databases();
+                                indexedDbSummary.databases = (dbs || []).slice(0, 10).map((item) => ({{
+                                    name: String((item && item.name) || ""),
+                                    version: Number((item && item.version) || 0),
+                                }}));
+                            }}
+                        }} catch (error) {{
+                            indexedDbSummary.error = String((error && error.message) || error || "");
+                        }}
+                        const cacheSummary = {{ supported: typeof caches !== "undefined", keys: [] }};
+                        try {{
+                            if (typeof caches !== "undefined") {{
+                                cacheSummary.keys = (await caches.keys()).slice(0, 10);
+                            }}
+                        }} catch (error) {{
+                            cacheSummary.error = String((error && error.message) || error || "");
+                        }}
+                        const serviceWorkerSummary = {{ supported: !!navigator.serviceWorker, registrations: [] }};
+                        try {{
+                            if (navigator.serviceWorker) {{
+                                const regs = await navigator.serviceWorker.getRegistrations();
+                                serviceWorkerSummary.registrations = (regs || []).slice(0, 10).map((reg) => ({{
+                                    scope: String((reg && reg.scope) || ""),
+                                    active: !!(reg && reg.active),
+                                    installing: !!(reg && reg.installing),
+                                    waiting: !!(reg && reg.waiting),
+                                }}));
+                            }}
+                        }} catch (error) {{
+                            serviceWorkerSummary.error = String((error && error.message) || error || "");
+                        }}
+                        return {{
+                            localStorage: summarizeStorage(window.localStorage),
+                            sessionStorage: summarizeStorage(window.sessionStorage),
+                            indexedDB: indexedDbSummary,
+                            cacheStorage: cacheSummary,
+                            serviceWorker: serviceWorkerSummary,
+                            navigator: {{
+                                language: String(navigator.language || ""),
+                                languages: Array.isArray(navigator.languages) ? navigator.languages.slice(0, 10) : [],
+                                cookieEnabled: !!navigator.cookieEnabled,
+                                onLine: !!navigator.onLine,
+                            }},
+                        }};
+                    }};
+                    const bodyTextPrefix = () => {{
+                        try {{
+                            return String((document.body && document.body.innerText) || "").slice(0, 300);
+                        }} catch (error) {{
+                            return `body-read-error:${{String((error && error.message) || error || "")}}`;
+                        }}
+                    }};
+                    const surfaceBefore = {{
+                        href: String(location.href || ""),
+                        title: String(document.title || ""),
+                        readyState: String(document.readyState || ""),
+                        bodyTextPrefix: bodyTextPrefix(),
+                        runtimeSummary: await collectRuntimeSummary(),
+                    }};
+                    try {{
+                        const response = await fetch(submitUrl, {{
+                            method: "POST",
+                            credentials: "include",
+                            mode: "cors",
+                            referrer: submitReferer,
+                            referrerPolicy: "strict-origin-when-cross-origin",
+                            headers: submitHeaders,
+                            body: JSON.stringify(submitPayload),
+                        }});
+                        const text = await response.text();
+                        return {{
+                            ok: !!response.ok,
+                            status: Number(response.status || 0),
+                            text,
+                            url: response.url || submitUrl,
+                            surfaceBefore,
+                            surfaceAfter: {{
+                                href: String(location.href || ""),
+                                title: String(document.title || ""),
+                                readyState: String(document.readyState || ""),
+                                bodyTextPrefix: bodyTextPrefix(),
+                                runtimeSummary: await collectRuntimeSummary(),
+                            }},
+                        }};
+                    }} catch (error) {{
+                        return {{
+                            ok: false,
+                            status: 0,
+                            error: String((error && error.message) || error || ""),
+                            url: submitUrl,
+                            text: "",
+                            surfaceBefore,
+                            surfaceAfter: {{
+                                href: String(location.href || ""),
+                                title: String(document.title || ""),
+                                readyState: String(document.readyState || ""),
+                                bodyTextPrefix: bodyTextPrefix(),
+                                runtimeSummary: await collectRuntimeSummary(),
+                            }},
+                        }};
+                    }}
+                }})()
+                """,
+                label=f"personal_submit_fetch:{normalized_slot_id}",
+                timeout_seconds=max(5.0, float(timeout_seconds or 75.0)) + 5.0,
+                await_promise=True,
+                return_by_value=True,
+            )
+
+        resident_info.last_used_at = time.time()
+
+
+        if not isinstance(result, dict):
+            raise RuntimeError("browser submit returned invalid result")
+
+        status_code = int(result.get("status") or 0)
+        response_text = str(result.get("text") or "")
+        parsed_json = None
+        if response_text:
+            try:
+                parsed_json = json.loads(response_text)
+            except Exception:
+                parsed_json = None
+
+        if status_code >= 400:
+            detail = ""
+            if isinstance(parsed_json, dict):
+                detail = parsed_json.get("detail") or parsed_json.get("message") or str(parsed_json)
+            if not detail:
+                detail = response_text[:300] or str(result.get("error") or f"HTTP {status_code}")
+            raise RuntimeError(f"browser submit failed: {detail}")
+
+        if not isinstance(parsed_json, dict):
+            transport_error = str(result.get("error") or "").strip()
+            if transport_error:
+                raise RuntimeError(f"browser submit failed: {transport_error}")
+            raise RuntimeError(f"browser submit returned non-json response: {response_text[:300]}")
+
+        return parsed_json
+
+    async def report_request_finished(self, browser_ref: Optional[Union[int, str]] = None):
+        normalized_slot_id = str(browser_ref or "").strip()
+        if not normalized_slot_id:
+            return
+        async with self._resident_lock:
+            resident_info = self._resident_tabs.get(normalized_slot_id)
+            if resident_info is not None:
+                resident_info.last_used_at = time.time()
+
     async def _clear_browser_cache(self):
         """清理浏览器全部缓存"""
         if not self.browser:
@@ -11226,6 +12581,9 @@ class BrowserCaptchaService:
 
                     # 从 cookies 中提取 __Secure-next-auth.session-token
                     session_token = None
+                    cookies = []
+                    current_url = ""
+                    page_title = ""
 
                     try:
                         cookies = await self._get_browser_cookies(
@@ -11256,6 +12614,146 @@ class BrowserCaptchaService:
                         except Exception as e2:
                             debug_logger.log_error(f"[BrowserCaptcha] document.cookie 获取失败: {e2}")
 
+                    try:
+                        current_url = str(
+                            await self._tab_evaluate(
+                                tab,
+                                "location.href",
+                                label=f"refresh_session_location_href:{slot_id}",
+                                timeout_seconds=2.0,
+                            )
+                            or ""
+                        )
+                    except Exception:
+                        current_url = ""
+
+                    try:
+                        page_title = str(
+                            await self._tab_evaluate(
+                                tab,
+                                "document.title",
+                                label=f"refresh_session_document_title:{slot_id}",
+                                timeout_seconds=2.0,
+                            )
+                            or ""
+                        )
+                    except Exception:
+                        page_title = ""
+
+                    stored_st = ""
+                    if token_id is not None and self.db:
+                        try:
+                            token_snapshot = await self.db.get_token(int(token_id))
+                            stored_st = str(getattr(token_snapshot, "st", "") or "")
+                        except Exception:
+                            stored_st = ""
+
+                    if session_token and stored_st and session_token == stored_st:
+                        debug_logger.log_warning(
+                            f"[BrowserCaptcha] refresh_session_token 命中旧 ST，尝试先预热 Google 上下文再重读 "
+                            f"(slot={slot_id}, token_id={token_id})"
+                        )
+                        await self._clear_stale_labs_next_auth_binding(
+                            resident_info,
+                            token_id,
+                            label=f"refresh_session_same_st:{slot_id}",
+                        )
+                        await self._warmup_google_context_cookies(
+                            resident_info,
+                            label=f"refresh_session_same_st:{slot_id}",
+                        )
+                        await asyncio.sleep(1)
+                        cookies = await self._get_browser_cookies(
+                            label=f"refresh_session_retry_get_cookies:{slot_id}",
+                            browser_context_id=resident_info.browser_context_id,
+                        )
+                        session_token = None
+                        for cookie in cookies:
+                            if cookie.name == "__Secure-next-auth.session-token":
+                                session_token = cookie.value
+                                break
+                        try:
+                            current_url = str(
+                                await self._tab_evaluate(
+                                    tab,
+                                    "location.href",
+                                    label=f"refresh_session_retry_location_href:{slot_id}",
+                                    timeout_seconds=2.0,
+                                )
+                                or ""
+                            )
+                        except Exception:
+                            current_url = ""
+                        try:
+                            page_title = str(
+                                await self._tab_evaluate(
+                                    tab,
+                                    "document.title",
+                                    label=f"refresh_session_retry_document_title:{slot_id}",
+                                    timeout_seconds=2.0,
+                                )
+                                or ""
+                            )
+                        except Exception:
+                            page_title = ""
+                        if session_token and session_token == stored_st:
+                            project_url = self._build_flow_project_url(project_id)
+                            debug_logger.log_warning(
+                                f"[BrowserCaptcha] Google warmup 后仍是旧 ST，改为进入真实项目页再重读 "
+                                f"(slot={slot_id}, token_id={token_id}, url={project_url})"
+                            )
+                            try:
+                                await self._tab_get(
+                                    tab,
+                                    project_url,
+                                    label=f"refresh_session_project_page:{slot_id}",
+                                    timeout_seconds=self._navigation_timeout_seconds,
+                                )
+                                await self._wait_for_document_ready(
+                                    tab,
+                                    retries=30,
+                                    interval_seconds=0.5,
+                                )
+                                resident_info.recaptcha_ready = await self._wait_for_recaptcha(tab)
+                                await asyncio.sleep(2)
+                                cookies = await self._get_browser_cookies(
+                                    label=f"refresh_session_project_page_get_cookies:{slot_id}",
+                                    browser_context_id=resident_info.browser_context_id,
+                                )
+                                session_token = None
+                                for cookie in cookies:
+                                    if cookie.name == "__Secure-next-auth.session-token":
+                                        session_token = cookie.value
+                                        break
+                                try:
+                                    current_url = str(
+                                        await self._tab_evaluate(
+                                            tab,
+                                            "location.href",
+                                            label=f"refresh_session_project_page_location_href:{slot_id}",
+                                            timeout_seconds=2.0,
+                                        )
+                                        or ""
+                                    )
+                                except Exception:
+                                    current_url = ""
+                                try:
+                                    page_title = str(
+                                        await self._tab_evaluate(
+                                            tab,
+                                            "document.title",
+                                            label=f"refresh_session_project_page_document_title:{slot_id}",
+                                            timeout_seconds=2.0,
+                                        )
+                                        or ""
+                                    )
+                                except Exception:
+                                    page_title = ""
+                            except Exception as project_page_error:
+                                debug_logger.log_warning(
+                                    f"[BrowserCaptcha] 项目页重读 Session Token 失败 (slot={slot_id}, token_id={token_id}): {project_page_error}"
+                                )
+
                 duration_ms = (time.time() - start_time) * 1000
 
                 if session_token:
@@ -11264,6 +12762,12 @@ class BrowserCaptchaService:
                     self._remember_token_affinity(token_id, slot_id, resident_info)
                     self._resident_error_streaks.pop(slot_id, None)
                     self._mark_browser_health(True)
+                    if token_id is not None:
+                        await self._persist_context_cookies_to_token(
+                            resident_info,
+                            token_id,
+                            label=f"refresh_session_success:{slot_id}",
+                        )
                     debug_logger.log_info(f"[BrowserCaptcha] ✅ Session Token 获取成功（耗时 {duration_ms:.0f}ms）")
                     return session_token
 
@@ -13245,6 +14749,42 @@ class _PersonalBrowserPoolService:
             if fingerprint:
                 return fingerprint
         return None
+
+    async def get_fingerprint(self, browser_ref: Optional[Union[int, str]]) -> Optional[Dict[str, Any]]:
+        await self._ensure_workers()
+        worker_index = self._parse_worker_index_from_slot_id(browser_ref)
+        if worker_index is not None and 0 <= worker_index < len(self._workers):
+            return await self._workers[worker_index].get_fingerprint(browser_ref)
+        return self.get_last_fingerprint()
+
+    async def submit_json_via_browser(
+        self,
+        browser_ref: Optional[Union[int, str]],
+        url: str,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        timeout_seconds: int = 75,
+        referer_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        await self._ensure_workers()
+        worker_index = self._parse_worker_index_from_slot_id(browser_ref)
+        if worker_index is None or not (0 <= worker_index < len(self._workers)):
+            raise RuntimeError("invalid browser_ref")
+        return await self._workers[worker_index].submit_json_via_browser(
+            browser_ref=browser_ref,
+            url=url,
+            headers=headers,
+            payload=payload,
+            timeout_seconds=timeout_seconds,
+            referer_url=referer_url,
+        )
+
+    async def report_request_finished(self, browser_ref: Optional[Union[int, str]] = None):
+        await self._ensure_workers()
+        worker_index = self._parse_worker_index_from_slot_id(browser_ref)
+        if worker_index is None or not (0 <= worker_index < len(self._workers)):
+            return
+        await self._workers[worker_index].report_request_finished(browser_ref)
 
     async def get_custom_token(
         self,

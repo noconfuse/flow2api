@@ -14,6 +14,8 @@ import time
 import re
 import random
 import uuid
+import json
+import urllib.request
 from typing import Optional, Dict, Any, List, Union
 from datetime import datetime
 from urllib.parse import urlparse, unquote, parse_qs
@@ -370,6 +372,7 @@ class TokenBrowser:
     
     def __init__(self, token_id: int, user_data_dir: str, db=None):
         self.token_id = token_id
+        self.browser_id = f"token-slot:{token_id}"
         self.user_data_dir = user_data_dir
         self.db = db
         self._semaphore = asyncio.Semaphore(1)  # Only one active solve task is allowed per slot.
@@ -380,6 +383,8 @@ class TokenBrowser:
         # Delay browser release after solve and track it by request_ref.
         self._pending_release_entries: Dict[str, Dict[str, Any]] = {}
         self._pending_release_lock = asyncio.Lock()
+        # Keep the slot reserved until the upstream generation request finishes.
+        self._active_generation_requests: Dict[str, float] = {}
         # Browser mode keeps a shared in-memory browser instead of a persistent profile.
         self._shared_browser_lock = asyncio.Lock()
         self._shared_playwright = None
@@ -401,10 +406,27 @@ class TokenBrowser:
     def _refresh_browser_profile(self):
         """Refresh the in-memory browser fingerprint profile."""
         base_w, base_h = random.choice(self.RESOLUTIONS)
-        self._profile_user_agent = random.choice(self.UA_LIST)
+        chrome_mac_ua_pool = [
+            ua for ua in self.UA_LIST
+            if "Macintosh;" in ua and " Chrome/" in ua and "Edg/" not in ua and "OPR/" not in ua
+        ]
+        self._profile_user_agent = random.choice(chrome_mac_ua_pool or self.UA_LIST)
         self._profile_viewport = {
             "width": base_w,
             "height": base_h - random.randint(0, 80),
+        }
+
+    def _build_profile_fingerprint(self) -> Dict[str, Any]:
+        user_agent = str(getattr(self, "_profile_user_agent", "") or "").strip()
+        chrome_major_match = re.search(r"Chrome/(\d+)", user_agent)
+        chrome_major = chrome_major_match.group(1) if chrome_major_match else "132"
+        platform = "\"macOS\"" if "Macintosh;" in user_agent else "\"Windows\""
+        return {
+            "user_agent": user_agent,
+            "accept_language": "en-US",
+            "sec_ch_ua": f"\"Chromium\";v=\"{chrome_major}\", \"Google Chrome\";v=\"{chrome_major}\", \"Not/A)Brand\";v=\"99\"",
+            "sec_ch_ua_mobile": "?0",
+            "sec_ch_ua_platform": platform,
         }
 
     def _get_slot_marker(self) -> str:
@@ -609,10 +631,11 @@ class TokenBrowser:
         browser_executable_path = os.environ.get("BROWSER_EXECUTABLE_PATH", "").strip() or None
         proxy_option, raw_proxy_url, _ = await self._resolve_proxy_runtime_config(token_proxy_url=token_proxy_url)
 
-        # 先只记录代理，真实 UA/UA-CH 交给浏览器自己暴露，避免 user-agent 与 sec-ch-ua 版本错位。
+        # Prefer a stable desktop Chrome identity instead of exposing raw Linux Chromium defaults.
         self._last_fingerprint = {
             "proxy_url": raw_proxy_url if raw_proxy_url else None,
         }
+        self._last_fingerprint.update(self._build_profile_fingerprint())
 
         try:
             browser_args = [
@@ -664,6 +687,10 @@ class TokenBrowser:
             context = await browser.new_context(
                 viewport=viewport,
                 locale="en-US",
+                user_agent=self._profile_user_agent,
+                extra_http_headers={
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
             )
             browser_pid = self._extract_browser_pid(browser)
             if manage_slot_pid:
@@ -700,6 +727,7 @@ class TokenBrowser:
         self._shared_proxy_url = None
         self._consecutive_browser_failures = 0
         self._shared_reuse_count = 0
+        self._active_generation_requests = {}
 
         if rotate_profile:
             self._refresh_browser_profile()
@@ -805,12 +833,42 @@ class TokenBrowser:
             if self._last_fingerprint is None:
                 self._last_fingerprint = {}
 
+            for key, value in self._build_profile_fingerprint().items():
+                if isinstance(value, str) and value and not self._last_fingerprint.get(key):
+                    self._last_fingerprint[key] = value
+
             for key in ("user_agent", "accept_language", "sec_ch_ua", "sec_ch_ua_mobile", "sec_ch_ua_platform"):
                 value = fingerprint.get(key)
-                if isinstance(value, str) and value:
+                if isinstance(value, str) and value and not self._last_fingerprint.get(key):
                     self._last_fingerprint[key] = value
         except Exception as e:
             debug_logger.log_warning(f"[BrowserCaptcha] Token-{self.token_id} 提取浏览器指纹失败: {type(e).__name__}: {str(e)[:200]}")
+
+    async def _apply_flow_session_cookie(self, context, session_token: Optional[str]):
+        """Inject the current Flow session token into the browser context."""
+        token_value = str(session_token or "").strip()
+        if not token_value:
+            return
+        try:
+            await context.clear_cookies()
+        except Exception:
+            pass
+        await context.add_cookies([
+            {
+                "name": "__Secure-next-auth.session-token",
+                "value": token_value,
+                "url": "https://labs.google",
+                "httpOnly": True,
+                "secure": True,
+                "sameSite": "Lax",
+            }
+        ])
+
+    def _build_flow_page_url(self, project_id: str) -> str:
+        project_id = str(project_id or "").strip()
+        if project_id:
+            return f"https://labs.google/fx/tools/flow/project/{project_id}"
+        return LABS_URL
 
     async def _verify_score_in_page(self, page, token: str, verify_url: str) -> Dict[str, Any]:
         """直接读取测试页面展示的分数，避免 verify.php 与页面显示口径不一致。"""
@@ -1109,50 +1167,33 @@ class TokenBrowser:
         if close_all:
             await self.recycle_browser(reason="force_close_all", rotate_profile=False)
 
-    async def _execute_captcha(self, context, project_id: str, website_key: str, action: str) -> Optional[str]:
+    async def _execute_captcha(
+        self,
+        context,
+        project_id: str,
+        website_key: str,
+        action: str,
+        session_token: Optional[str] = None,
+    ) -> Optional[str]:
         """在给定 context 中执行打码逻辑"""
         page = None
+        debug_stage = "apply_session_cookie"
         try:
+            await self._apply_flow_session_cookie(context, session_token)
             page = await context.new_page()
             await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
 
-            # 使用更简单的 API 地址，避免加载复杂页面
-            page_url = "https://labs.google/fx/api/auth/providers"
+            page_url = self._build_flow_page_url(project_id)
             primary_host = "https://www.recaptcha.net" if self._browser_proxy_active else "https://www.google.com"
             secondary_host = "https://www.google.com" if primary_host == "https://www.recaptcha.net" else "https://www.recaptcha.net"
             debug_logger.log_info(
                 f"[BrowserCaptcha] Token-{self.token_id} 加载 enterprise.js: primary={primary_host}, secondary={secondary_host}"
             )
-            
-            async def handle_route(route):
-                if route.request.url.rstrip('/') == page_url.rstrip('/'):
-                    html = f"""<html><head><script>
-                    (() => {{
-                        const urls = [
-                            '{primary_host}/recaptcha/enterprise.js?render={website_key}',
-                            '{secondary_host}/recaptcha/enterprise.js?render={website_key}'
-                        ];
-                        const loadScript = (index) => {{
-                            if (index >= urls.length) return;
-                            const script = document.createElement('script');
-                            script.src = urls[index];
-                            script.async = true;
-                            script.onerror = () => loadScript(index + 1);
-                            document.head.appendChild(script);
-                        }};
-                        loadScript(0);
-                    }})();
-                    </script></head><body></body></html>"""
-                    await route.fulfill(status=200, content_type="text/html", body=html)
-                elif any(d in route.request.url for d in ["google.com", "gstatic.com", "recaptcha.net"]):
-                    await route.continue_()
-                else:
-                    await route.abort()
 
             def handle_request_failed(request):
                 try:
                     failed_url = request.url or ""
-                    if not any(d in failed_url for d in ["google.com", "gstatic.com", "recaptcha.net"]):
+                    if not any(d in failed_url for d in ["google.com", "gstatic.com", "recaptcha.net", "labs.google"]):
                         return
                     failure = request.failure or ""
                     debug_logger.log_warning(
@@ -1160,32 +1201,130 @@ class TokenBrowser:
                     )
                 except Exception:
                     pass
-            
-            await page.route("**/*", handle_route)
+
+            wait_expression = (
+                "typeof grecaptcha !== 'undefined' && "
+                "typeof grecaptcha.enterprise !== 'undefined' && "
+                "typeof grecaptcha.enterprise.execute === 'function'"
+            )
+
             page.on("requestfailed", handle_request_failed)
             try:
-                await page.goto(page_url, wait_until="load", timeout=15000)  # 减少到15秒
+                debug_stage = "page_goto"
+                await page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
             except Exception as e:
                 debug_logger.log_warning(f"[BrowserCaptcha] Token-{self.token_id} page.goto 失败: {type(e).__name__}: {str(e)[:200]}")
                 return None
 
+            page_loaded = False
+            for _ in range(20):
+                try:
+                    ready_state = await page.evaluate("document.readyState")
+                    if ready_state == "complete":
+                        page_loaded = True
+                        break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5)
+            if not page_loaded:
+                debug_logger.log_warning(f"[BrowserCaptcha] Token-{self.token_id} 页面 readyState 未达到 complete，继续尝试预热")
+
             try:
-                await page.wait_for_function("typeof grecaptcha !== 'undefined'", timeout=10000)  # 减少到10秒
+                await page.mouse.move(320, 220)
+                await page.mouse.move(520, 320, steps=12)
+                await page.mouse.wheel(0, 240)
+                await page.bring_to_front()
+                await page.evaluate("""
+                    (() => {
+                        try {
+                            window.focus();
+                            window.dispatchEvent(new Event('focus'));
+                            document.dispatchEvent(new MouseEvent('mousemove', {
+                                bubbles: true,
+                                clientX: Math.max(32, Math.floor((window.innerWidth || 1280) * 0.4)),
+                                clientY: Math.max(32, Math.floor((window.innerHeight || 720) * 0.35))
+                            }));
+                            window.scrollTo(0, Math.min(280, document.body?.scrollHeight || 280));
+                        } catch (e) {}
+                    })()
+                """)
+            except Exception:
+                pass
+
+            try:
+                debug_stage = "wait_grecaptcha"
+                await page.wait_for_function(wait_expression, timeout=20000)
             except Exception as e:
-                debug_logger.log_warning(f"[BrowserCaptcha] Token-{self.token_id} grecaptcha 未就绪: {type(e).__name__}: {str(e)[:200]}")
-                return None
+                debug_logger.log_warning(
+                    f"[BrowserCaptcha] Token-{self.token_id} grecaptcha 未就绪，尝试补注入 enterprise.js: "
+                    f"{type(e).__name__}: {str(e)[:200]}"
+                )
+                try:
+                    debug_stage = "inject_enterprise_script"
+                    await page.evaluate("""
+                        ({ primaryUrl, secondaryUrl }) => {
+                            const urls = [primaryUrl, secondaryUrl];
+                            const loadScript = (index) => {
+                                if (index >= urls.length) return;
+                                const script = document.createElement('script');
+                                script.src = urls[index];
+                                script.async = true;
+                                script.onerror = () => loadScript(index + 1);
+                                document.head.appendChild(script);
+                            };
+                            loadScript(0);
+                        }
+                    """, {
+                        "primaryUrl": f"{primary_host}/recaptcha/enterprise.js?render={website_key}",
+                        "secondaryUrl": f"{secondary_host}/recaptcha/enterprise.js?render={website_key}",
+                    })
+                    debug_stage = "wait_grecaptcha_after_inject"
+                    await page.wait_for_function(wait_expression, timeout=20000)
+                except Exception as inject_error:
+                    snapshot = {}
+                    try:
+                        snapshot = await page.evaluate("""
+                            () => {
+                                const scripts = Array.from(document.scripts || []).map((script) => script?.src || "").filter(Boolean);
+                                const g = window.grecaptcha;
+                                const enterprise = g && g.enterprise ? g.enterprise : null;
+                                return {
+                                    ready_state: document.readyState || "",
+                                    location: location.href || "",
+                                    script_urls: scripts.slice(0, 12),
+                                    grecaptcha_type: typeof g,
+                                    enterprise_type: typeof enterprise,
+                                    enterprise_keys: enterprise ? Object.keys(enterprise).slice(0, 20) : [],
+                                    has_execute: !!(enterprise && typeof enterprise.execute === "function"),
+                                    has_ready: !!(enterprise && typeof enterprise.ready === "function"),
+                                };
+                            }
+                        """)
+                    except Exception:
+                        snapshot = {}
+                    debug_logger.log_warning(f"[BrowserCaptcha] Token-{self.token_id} grecaptcha 最终未就绪: {type(inject_error).__name__}: {str(inject_error)[:200]}")
+                    return None
 
             # 记录本次打码页面的真实 UA/客户端提示头
+            debug_stage = "capture_fingerprint"
             await self._capture_page_fingerprint(page)
 
+            debug_stage = "evaluate_execute"
             token = await asyncio.wait_for(
                 page.evaluate(f"""
                     (actionName) => {{
                         return new Promise((resolve, reject) => {{
                             const timeout = setTimeout(() => reject(new Error('timeout')), 25000);
-                            grecaptcha.enterprise.execute('{website_key}', {{action: actionName}})
-                                .then(t => {{ clearTimeout(timeout); resolve(t); }})
-                                .catch(e => {{ clearTimeout(timeout); reject(e); }});
+                            try {{
+                                grecaptcha.enterprise.ready(() => {{
+                                    grecaptcha.enterprise.execute('{website_key}', {{action: actionName}})
+                                        .then(t => {{ clearTimeout(timeout); resolve(t); }})
+                                        .catch(e => {{ clearTimeout(timeout); reject(e); }});
+                                }});
+                            }} catch (e) {{
+                                clearTimeout(timeout);
+                                reject(e);
+                            }}
                         }});
                     }}
                 """, action),
@@ -1415,18 +1554,140 @@ class TokenBrowser:
     def has_shared_browser(self) -> bool:
         return bool(self._shared_browser or self._shared_context or self._shared_keepalive_page)
 
+    def has_active_generation_request(self) -> bool:
+        return bool(self._active_generation_requests)
+
     def get_last_fingerprint(self) -> Optional[Dict[str, Any]]:
         """返回最近一次打码浏览器的指纹快照。"""
         if not self._last_fingerprint:
             return None
         return dict(self._last_fingerprint)
+
+    async def _begin_generation_request(self) -> str:
+        request_ref = uuid.uuid4().hex
+        self._active_generation_requests[request_ref] = time.time()
+        return request_ref
+
+    async def finish_generation_request(self, request_ref: Optional[str] = None):
+        matched_ref = request_ref
+        if matched_ref and matched_ref in self._active_generation_requests:
+            self._active_generation_requests.pop(matched_ref, None)
+            return
+        if not matched_ref and self._active_generation_requests:
+            first_ref = next(iter(self._active_generation_requests.keys()))
+            self._active_generation_requests.pop(first_ref, None)
+
+    async def submit_json_via_browser(
+        self,
+        url: str,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        timeout_seconds: int = 75,
+        referer_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Submit JSON through the shared browser context to keep browser/runtime consistency."""
+        _, _, context = await self._get_or_create_shared_browser()
+        page = None
+        target_url = str(referer_url or LABS_URL or "https://labs.google/fx/tools/flow").strip()
+        try:
+            page_request_observation: Dict[str, Any] = {
+                "saw_labs_same_origin_request": False,
+                "saw_cross_site_aisandbox_request": False,
+                "observed_x_client_data": "",
+                "observed_x_browser_validation": "",
+                "observed_origin": "",
+                "observed_referer": "",
+            }
+            page = await context.new_page()
+            def _observe_request(request):
+                try:
+                    req_url = request.url or ""
+                    req_headers = request.headers or {}
+                    lower_headers = {str(k).lower(): str(v) for k, v in req_headers.items()}
+                    if req_url.startswith("https://labs.google/"):
+                        page_request_observation["saw_labs_same_origin_request"] = True
+                    if req_url.startswith("https://aisandbox-pa.googleapis.com/"):
+                        page_request_observation["saw_cross_site_aisandbox_request"] = True
+                    if not page_request_observation["observed_x_client_data"] and lower_headers.get("x-client-data"):
+                        page_request_observation["observed_x_client_data"] = lower_headers.get("x-client-data", "")
+                    if not page_request_observation["observed_x_browser_validation"] and lower_headers.get("x-browser-validation"):
+                        page_request_observation["observed_x_browser_validation"] = lower_headers.get("x-browser-validation", "")
+                    if not page_request_observation["observed_origin"] and lower_headers.get("origin"):
+                        page_request_observation["observed_origin"] = lower_headers.get("origin", "")
+                    if not page_request_observation["observed_referer"] and lower_headers.get("referer"):
+                        page_request_observation["observed_referer"] = lower_headers.get("referer", "")
+                except Exception:
+                    pass
+            page.on("request", _observe_request)
+            try:
+                await page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
+            except Exception as e:
+                debug_logger.log_warning(
+                    f"[BrowserCaptcha] Token-{self.token_id} browser submit pre-nav failed: {type(e).__name__}: {str(e)[:200]}"
+                )
+
+            await self._capture_page_fingerprint(page)
+            try:
+                await page.reload(wait_until="domcontentloaded", timeout=15000)
+            except Exception:
+                pass
+
+            response = await asyncio.wait_for(
+                context.request.post(
+                    url,
+                    data=json.dumps(payload, ensure_ascii=False),
+                    headers=headers,
+                    timeout=max(3000, int(timeout_seconds * 1000)),
+                    fail_on_status_code=False,
+                ),
+                timeout=max(5, int(timeout_seconds)) + 5,
+            )
+            response_text = await response.text()
+            result = {
+                "ok": bool(response.ok),
+                "status": int(response.status or 0),
+                "text": response_text,
+                "url": response.url or url,
+            }
+
+            if not isinstance(result, dict):
+                raise RuntimeError("browser submit returned invalid result")
+
+            status_code = int(result.get("status") or 0)
+            response_text = str(result.get("text") or "")
+            parsed_json = None
+            if response_text:
+                try:
+                    parsed_json = json.loads(response_text)
+                except Exception:
+                    parsed_json = None
+
+            if status_code >= 400:
+                detail = ""
+                if isinstance(parsed_json, dict):
+                    detail = parsed_json.get("detail") or parsed_json.get("message") or str(parsed_json)
+                if not detail:
+                    detail = response_text[:300] or str(result.get("error") or f"HTTP {status_code}")
+                raise RuntimeError(f"browser submit failed: {detail}")
+
+            if not isinstance(parsed_json, dict):
+                raise RuntimeError(f"browser submit returned non-json response: {response_text[:300]}")
+
+            return parsed_json
+        finally:
+            if page:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
     
     async def get_token(
         self,
         project_id: str,
         website_key: str,
         action: str = "IMAGE_GENERATION",
-        token_proxy_url: Optional[str] = None
+        token_proxy_url: Optional[str] = None,
+        session_token: Optional[str] = None,
     ) -> tuple[Optional[str], Optional[str]]:
         """Get a token from the shared browser unless a fatal browser error occurs."""
         async with self._semaphore:
@@ -1439,14 +1700,21 @@ class TokenBrowser:
                         start_ts = time.time()
                         _, _, context = await self._get_or_create_shared_browser(token_proxy_url=token_proxy_url)
 
-                        token = await self._execute_captcha(context, project_id, website_key, action)
+                        token = await self._execute_captcha(
+                            context,
+                            project_id,
+                            website_key,
+                            action,
+                            session_token=session_token,
+                        )
                         if token:
                             self._solve_count += 1
                             self._consecutive_browser_failures = 0
+                            request_ref = await self._begin_generation_request()
                             debug_logger.log_info(
                                 f"[BrowserCaptcha] Token-{self.token_id} token acquired ({(time.time()-start_ts)*1000:.0f}ms, launches={self._shared_launch_count}, reuse={self._shared_reuse_count})"
                             )
-                            return token, None
+                            return token, request_ref
 
                         self._error_count += 1
                         self._consecutive_browser_failures += 1
@@ -1782,7 +2050,12 @@ class BrowserCaptchaService:
         if self._slot_reservations.get(slot_id, 0) > 0:
             return True
         browser = self._browsers.get(slot_id)
-        return bool(browser and getattr(browser, 'is_busy', lambda: False)())
+        return bool(
+            browser and (
+                getattr(browser, 'is_busy', lambda: False)()
+                or getattr(browser, 'has_active_generation_request', lambda: False)()
+            )
+        )
 
     def _has_warmed_browser_for_allocation(self, slot_id: int) -> bool:
         browser = self._browsers.get(slot_id)
@@ -1900,6 +2173,13 @@ class BrowserCaptchaService:
         
         self._stats["req_total"] += 1
         token_proxy_url = await self._resolve_token_proxy_url(token_id)
+        token_session = None
+        if token_id and self.db:
+            try:
+                token_record = await self.db.get_token(token_id)
+                token_session = str(getattr(token_record, "st", "") or "").strip() or None
+            except Exception as e:
+                debug_logger.log_warning(f"[BrowserCaptcha] 读取 token({token_id}) session 失败: {e}")
         
         token: Optional[str] = None
         request_ref: Optional[str] = None
@@ -1914,7 +2194,8 @@ class BrowserCaptchaService:
                         project_id,
                         self.website_key,
                         action,
-                        token_proxy_url=token_proxy_url
+                        token_proxy_url=token_proxy_url,
+                        session_token=token_session,
                     )
                 finally:
                     await self._release_slot_reservation(browser_id)
@@ -1934,7 +2215,8 @@ class BrowserCaptchaService:
                 project_id,
                 self.website_key,
                 action,
-                token_proxy_url=token_proxy_url
+                token_proxy_url=token_proxy_url,
+                session_token=token_session,
             )
         finally:
             await self._release_slot_reservation(browser_id)
@@ -2026,6 +2308,32 @@ class BrowserCaptchaService:
                 return None
             return browser.get_last_fingerprint()
 
+    async def submit_json_via_browser(
+        self,
+        browser_ref: Optional[Union[int, str]],
+        url: str,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        timeout_seconds: int = 75,
+        referer_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        browser_id, _ = self._parse_browser_ref(browser_ref)
+        if browser_id is None:
+            raise RuntimeError("invalid browser_ref")
+
+        async with self._browsers_lock:
+            browser = self._browsers.get(browser_id)
+        if not browser:
+            raise RuntimeError(f"browser slot {browser_id} not found")
+
+        return await browser.submit_json_via_browser(
+            url=url,
+            headers=headers,
+            payload=payload,
+            timeout_seconds=timeout_seconds,
+            referer_url=referer_url,
+        )
+
     async def report_error(self, browser_ref: Optional[Union[int, str]] = None, error_reason: Optional[str] = None):
         """Handle upstream errors; recycle the browser only for explicit reCAPTCHA evaluation failures."""
         browser_id, _ = self._parse_browser_ref(browser_ref)
@@ -2057,7 +2365,7 @@ class BrowserCaptchaService:
 
     async def report_request_finished(self, browser_ref: Optional[Union[int, str]] = None):
         """上层通知本次请求已完成；browser 模式仅保留常驻浏览器，不在成功后主动关闭。"""
-        browser_id, _ = self._parse_browser_ref(browser_ref)
+        browser_id, request_ref = self._parse_browser_ref(browser_ref)
         if browser_id is None:
             return
 
@@ -2065,6 +2373,7 @@ class BrowserCaptchaService:
             browser = self._browsers.get(browser_id)
 
         if browser:
+            await browser.finish_generation_request(request_ref)
             keepalive_alive = False
             keepalive_page = getattr(browser, '_shared_keepalive_page', None)
             try:
@@ -2118,4 +2427,3 @@ class BrowserCaptchaService:
             "browsers": []
         }
         return base_stats
-

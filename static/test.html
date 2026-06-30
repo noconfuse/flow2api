@@ -18,10 +18,101 @@ h1 { text-align: center; margin-bottom: 8px; font-size: 24px; color: #7c8aff; }
 .config-bar label { font-size: 13px; color: #888; white-space: nowrap; }
 .config-bar input { flex: 1; background: #0f1117; border: 1px solid #2a2b3a; color: #e1e1e6; padding: 8px 12px; border-radius: 6px; font-size: 14px; }
 .config-note { margin-bottom: 20px; font-size: 12px; color: #7f8498; }
+.config-note.warning { color: #fbbf24; }
 
-.main-layout { display: flex; gap: 20px; }
-.sidebar { width: 280px; flex-shrink: 0; }
-.content { flex: 1; min-width: 0; }
+.generate-shell,
+.workbench-layout { display: grid; gap: 16px; }
+.generate-shell.hidden,
+.workbench-layout.hidden { display: none; }
+.generate-selector-grid {
+  display: grid;
+  grid-template-columns: 240px 240px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.generate-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.content-tabs { display: flex; gap: 10px; margin-bottom: 16px; }
+.content-tab {
+  padding: 10px 14px; border-radius: 10px; border: 1px solid #2a2b3a; background: #161824;
+  color: #9aa1b5; cursor: pointer; font-size: 13px; font-weight: 600;
+}
+.content-tab.active { background: #2a2b5a; color: #e1e1e6; border-color: #4c57c9; }
+.content-pane.hidden { display: none; }
+.workbench-selector-grid {
+  display: grid;
+  grid-template-columns: 240px 240px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.selector-card {
+  background: #1a1b26;
+  border: 1px solid #2a2b3a;
+  border-radius: 12px;
+  overflow: hidden;
+  min-height: 380px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.selector-card-head {
+  padding: 12px 14px;
+  border-bottom: 1px solid #222433;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+.selector-card-head-main { min-width: 0; }
+.selector-card-head-actions {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap;
+}
+.selector-card-title { font-size: 13px; color: #e8ebff; font-weight: 600; }
+.selector-card-meta { font-size: 12px; color: #7f8498; }
+.selector-card-body {
+  padding: 12px;
+  overflow-y: auto;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+.selector-empty {
+  border: 1px dashed #2a2b3a;
+  border-radius: 10px;
+  color: #7f8498;
+  font-size: 13px;
+  padding: 14px;
+  background: #11131b;
+}
+.selector-item {
+  border: 1px solid #2a2b3a;
+  border-radius: 10px;
+  background: #11131b;
+  padding: 10px 12px;
+  cursor: pointer;
+  display: grid;
+  gap: 6px;
+}
+.selector-item:hover { border-color: #4650b5; background: #171924; }
+.selector-item.active { border-color: #7c8aff; background: #1f2340; }
+.selector-item-title {
+  font-size: 13px;
+  color: #e1e1e6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.selector-item-sub,
+.selector-item-meta {
+  font-size: 12px;
+  color: #7f8498;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 
 .model-section { margin-bottom: 16px; }
 .section-title {
@@ -49,6 +140,40 @@ h1 { text-align: center; margin-bottom: 8px; font-size: 24px; color: #7c8aff; }
 }
 .tag-image { background: #1a3a2a; color: #4ade80; }
 .tag-video { background: #3a2a1a; color: #fb923c; }
+.operation-panel {
+  background: #1a1b26; border: 1px solid #2a2b3a; border-radius: 10px; padding: 12px; margin-bottom: 0;
+}
+.operation-panel h4 { font-size: 13px; color: #9aa1b5; margin-bottom: 10px; }
+.operation-grid { display: grid; gap: 8px; }
+.operation-item {
+  border: 1px solid #2a2b3a; border-radius: 8px; background: #11131b; padding: 10px; cursor: pointer;
+}
+.operation-item:hover { border-color: #4650b5; background: #171924; }
+.operation-item.active { border-color: #7c8aff; background: #1f2340; }
+.operation-name { font-size: 13px; color: #e1e1e6; margin-bottom: 4px; }
+.operation-desc { font-size: 12px; color: #7f8498; }
+.family-panel {
+  background: #1a1b26; border: 1px solid #2a2b3a; border-radius: 10px; padding: 12px; margin-bottom: 0;
+}
+.family-panel h4 { font-size: 13px; color: #9aa1b5; margin-bottom: 10px; }
+.family-grid { display: grid; gap: 8px; }
+.family-chip {
+  border: 1px solid #2a2b3a; border-radius: 10px; background: #11131b; padding: 10px 12px;
+  cursor: pointer; font-size: 12px; color: #c7cbda; width: 100%; text-align: left;
+}
+.family-chip:hover { border-color: #4650b5; background: #171924; }
+.family-chip.active { border-color: #7c8aff; background: #1f2340; color: #e8ebff; }
+.model-panel {
+  background: #1a1b26; border: 1px solid #2a2b3a; border-radius: 10px; overflow: hidden; min-height: 380px;
+}
+.model-panel-head {
+  padding: 10px 12px; border-bottom: 1px solid #222433; display: flex; justify-content: space-between; gap: 12px; align-items: center;
+}
+.model-panel-title { font-size: 13px; color: #e1e1e6; }
+.model-panel-meta { font-size: 12px; color: #7f8498; }
+.sidebar-empty {
+  background: #1a1b26; border: 1px dashed #2a2b3a; border-radius: 10px; padding: 14px; color: #7f8498; font-size: 13px;
+}
 
 .gen-panel {
   background: #1a1b26; border: 1px solid #2a2b3a; border-radius: 10px; padding: 20px;
@@ -58,12 +183,123 @@ h1 { text-align: center; margin-bottom: 8px; font-size: 24px; color: #7c8aff; }
 
 .form-group { margin-bottom: 14px; }
 .form-group label { display: block; font-size: 13px; color: #888; margin-bottom: 6px; }
+.form-group input {
+  width: 100%; background: #0f1117; border: 1px solid #2a2b3a; color: #e1e1e6;
+  padding: 10px 12px; border-radius: 8px; font-size: 14px;
+}
 .form-group textarea {
   width: 100%; background: #0f1117; border: 1px solid #2a2b3a; color: #e1e1e6;
   padding: 10px 12px; border-radius: 8px; font-size: 14px; resize: vertical; min-height: 80px;
   font-family: inherit;
 }
+.form-group input:focus,
 .form-group textarea:focus { outline: none; border-color: #7c8aff; }
+.form-hint { margin-top: 6px; font-size: 12px; color: #7f8498; }
+.inline-fields { display: flex; gap: 12px; }
+.inline-fields > div { flex: 1; }
+.inline-actions { display: flex; gap: 8px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
+.frame-range-panel {
+  margin-bottom: 12px;
+  padding: 10px 0 0;
+  border: 1px solid #2a2b3a;
+  border-radius: 10px;
+  background: #11131b;
+}
+.frame-range-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin: 0 12px 10px;
+  font-size: 12px;
+  color: #9aa1b5;
+  flex-wrap: wrap;
+}
+.frame-range-summary { color: #e8ebff; font-weight: 600; }
+.frame-range-slider {
+  position: relative;
+  height: 24px;
+  --range-start: 0%;
+  --range-end: 100%;
+  --thumb-size: 16px;
+  overflow: visible;
+}
+.frame-range-slider-inner {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+}
+.frame-range-track,
+.frame-range-selection {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 6px;
+  border-radius: 999px;
+}
+.frame-range-track { background: #2a2b3a; }
+.frame-range-selection {
+  background: #7c8aff;
+  left: var(--range-start);
+  right: calc(100% - var(--range-end));
+}
+.frame-range-slider input[type="range"] {
+  position: absolute;
+  left: calc(var(--thumb-size) / -2);
+  top: 0;
+  width: calc(100% + var(--thumb-size));
+  height: 24px;
+  margin: 0;
+  background: transparent;
+  pointer-events: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.frame-range-slider input[type="range"]::-webkit-slider-thumb {
+  pointer-events: auto;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  background: #7c8aff;
+  box-shadow: 0 0 0 2px rgba(124, 138, 255, 0.2);
+  cursor: pointer;
+}
+.frame-range-slider input[type="range"]::-moz-range-thumb {
+  pointer-events: auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  background: #7c8aff;
+  box-shadow: 0 0 0 2px rgba(124, 138, 255, 0.2);
+  cursor: pointer;
+}
+.frame-range-slider input[type="range"]::-webkit-slider-runnable-track { background: transparent; }
+.frame-range-slider input[type="range"]::-moz-range-track { background: transparent; }
+.frame-range-scale {
+  display: flex;
+  justify-content: space-between;
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: #7f8498;
+}
+.frame-range-hidden-inputs { display: none; }
+.btn-secondary {
+  padding: 8px 12px; background: #2a2b3a; color: #e1e1e6; border: 1px solid #3a3b4a;
+  border-radius: 8px; font-size: 13px; cursor: pointer;
+}
+.btn-secondary:hover { background: #343649; }
+.tag-pill {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+  color: #9aa1b5; background: #11131b; border: 1px solid #2a2b3a; border-radius: 999px;
+  padding: 6px 10px;
+}
 
 .image-upload-area {
   border: 2px dashed #2a2b3a; border-radius: 8px; padding: 20px; text-align: center;
@@ -92,9 +328,60 @@ h1 { text-align: center; margin-bottom: 8px; font-size: 24px; color: #7c8aff; }
 .btn-generate:disabled { background: #3a3b5a; cursor: not-allowed; }
 
 .output-panel {
-  background: #1a1b26; border: 1px solid #2a2b3a; border-radius: 10px; padding: 20px; margin-top: 16px;
+  background: #1a1b26; border: 1px solid #2a2b3a; border-radius: 10px; padding: 20px; margin-top: 0;
 }
 .output-panel h3 { font-size: 15px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+.workbench-panel {
+  background: #1a1b26; border: 1px solid #2a2b3a; border-radius: 10px; padding: 16px;
+}
+.workbench-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+.workbench-head h3 { font-size: 15px; }
+.workbench-note { font-size: 12px; color: #7f8498; margin-bottom: 12px; }
+.media-list { display: grid; gap: 8px; }
+.media-item {
+  border: 1px solid #2a2b3a; border-radius: 8px; background: #171924; padding: 10px; cursor: pointer;
+  display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px; align-items: center;
+}
+.media-item:hover { border-color: #4650b5; }
+.media-item.active { border-color: #7c8aff; background: #1f2340; }
+.media-thumb {
+  width: 56px; height: 56px; border-radius: 8px; background: #0f1117; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; color: #7f8498; font-size: 11px;
+}
+.media-thumb img, .media-thumb video { width: 100%; height: 100%; object-fit: cover; }
+.media-main { min-width: 0; display: grid; gap: 4px; }
+.media-name { font-size: 13px; color: #e1e1e6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-meta { font-size: 12px; color: #7f8498; display: flex; gap: 8px; flex-wrap: wrap; }
+.preview-panel { display: grid; gap: 16px; }
+.preview-card {
+  background: #1a1b26; border: 1px solid #2a2b3a; border-radius: 10px; padding: 16px; min-height: 220px;
+}
+.workbench-upload-inline {
+  border: 1px solid #222433; background: #141622; border-radius: 10px; padding: 10px; margin-bottom: 10px;
+  display: grid; gap: 8px;
+}
+.workbench-upload-file {
+  font-size: 12px; color: #c6cad8; background: #11131b; border: 1px solid #2a2b3a; border-radius: 8px;
+  padding: 10px 12px; word-break: break-all;
+}
+.workbench-upload-status {
+  font-size: 12px; line-height: 1.6; color: #9aa1b5;
+}
+.workbench-upload-status.is-error { color: #fca5a5; }
+.workbench-upload-status.is-success { color: #86efac; }
+.preview-empty { font-size: 13px; color: #7f8498; padding: 24px 0; }
+.preview-box {
+  background: #0f1117; border: 1px solid #222433; border-radius: 10px; min-height: 320px;
+  display: flex; align-items: center; justify-content: center; overflow: hidden; margin-bottom: 14px;
+}
+.preview-box img, .preview-box video { width: 100%; max-height: 520px; object-fit: contain; }
+.preview-title { font-size: 15px; margin-bottom: 6px; }
+.preview-meta { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; color: #7f8498; margin-bottom: 12px; }
+.preview-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.media-link { color: #7c8aff; text-decoration: none; }
+.media-link:hover { text-decoration: underline; }
+.workbench-empty { font-size: 13px; color: #7f8498; padding: 14px 0; }
+.loading-text { font-size: 12px; color: #9aa1b5; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .status-idle { background: #555; }
 .status-running { background: #facc15; animation: pulse 1s infinite; }
@@ -110,14 +397,124 @@ h1 { text-align: center; margin-bottom: 8px; font-size: 24px; color: #7c8aff; }
 .output-result { margin-top: 12px; }
 .output-result img { max-width: 100%; border-radius: 8px; margin-top: 8px; }
 .output-result video { max-width: 100%; border-radius: 8px; margin-top: 8px; }
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(5, 8, 18, 0.78); display: flex; align-items: center; justify-content: center;
+  padding: 24px; z-index: 1000;
+}
+.modal-overlay.hidden { display: none; }
+.modal-shell {
+  width: min(1180px, 100%); max-height: calc(100vh - 48px); overflow: hidden; border-radius: 16px;
+  border: 1px solid #2a2b3a; background: #0f1117; box-shadow: 0 30px 80px rgba(0,0,0,0.5);
+}
+.modal-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 18px 20px; border-bottom: 1px solid #222433;
+}
+.modal-head h3 { font-size: 18px; color: #e8ebff; margin-bottom: 6px; }
+.modal-subtitle { font-size: 12px; color: #8f96aa; }
+.modal-close {
+  border: 1px solid #2a2b3a; background: #171924; color: #d7dbef; border-radius: 8px; padding: 8px 10px; cursor: pointer;
+}
+.modal-close:hover { border-color: #4650b5; }
+.modal-body {
+  display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 18px; padding: 18px 20px 20px; max-height: calc(100vh - 140px); overflow: auto;
+}
+.modal-sidebar-stack { display: grid; gap: 14px; align-content: start; }
+.modal-main-card {
+  background: #171924; border: 1px solid #2a2b3a; border-radius: 12px; padding: 14px;
+}
+.modal-main-stack { display: grid; gap: 14px; }
+.derived-editor-card {
+  display: grid;
+  gap: 12px;
+}
+.derived-editor-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+.derived-editor-title {
+  display: grid;
+  gap: 4px;
+}
+.derived-editor-title h3 {
+  font-size: 24px;
+  line-height: 1.1;
+}
+.derived-editor-sub {
+  font-size: 12px;
+  color: #8f96aa;
+}
+.derived-source-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid #2a2b3a;
+  background: #11131b;
+  font-size: 12px;
+  color: #9aa1b5;
+  white-space: nowrap;
+}
+.derived-preview-shell {
+  display: none;
+  gap: 10px;
+}
+.derived-preview-shell.active {
+  display: grid;
+}
+.derived-preview-frame {
+  background: #0f1117;
+  border: 1px solid #26283a;
+  border-radius: 12px;
+  min-height: 260px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.derived-preview-frame video {
+  width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+}
+.derived-preview-caption {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  font-size: 12px;
+  color: #9aa1b5;
+  flex-wrap: wrap;
+}
+.derived-preview-empty {
+  border: 1px dashed #2a2b3a;
+  border-radius: 12px;
+  padding: 18px;
+  text-align: center;
+  color: #7f8498;
+  font-size: 13px;
+}
+.modal-log {
+  background: #0f1117; border-radius: 8px; padding: 12px; font-size: 13px; line-height: 1.6; min-height: 180px; max-height: 260px;
+  overflow-y: auto; white-space: pre-wrap; word-break: break-all; color: #aaa;
+}
+.modal-result img, .modal-result video { max-width: 100%; border-radius: 8px; margin-top: 10px; }
+@media (max-width: 980px) {
+  .generate-selector-grid,
+  .workbench-selector-grid,
+  .generate-stage,
+  .modal-body { grid-template-columns: 1fr; }
+}
 
 .model-list::-webkit-scrollbar, .output-log::-webkit-scrollbar { width: 4px; }
 .model-list::-webkit-scrollbar-thumb, .output-log::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
 
 @media (max-width: 768px) {
-  .main-layout { flex-direction: column; }
-  .sidebar { width: 100%; }
   .config-bar { flex-wrap: wrap; }
+  .selector-card,
+  .model-panel { min-height: 280px; }
 }
 </style>
 </head>
@@ -134,48 +531,275 @@ h1 { text-align: center; margin-bottom: 8px; font-size: 24px; color: #7c8aff; }
   </div>
   <p class="config-note">未填写 API Key 或模型列表加载失败时，会回退到内置候选模型；实际生成前仍需填写有效 API Key。</p>
 
-  <div class="main-layout">
-    <div class="sidebar" id="modelSidebar"></div>
-    <div class="content">
+  <div class="content-tabs">
+    <button type="button" class="content-tab active" id="tabGenerate" data-tab="generate">生成测试</button>
+    <button type="button" class="content-tab" id="tabHistory" data-tab="history">媒体工作台</button>
+  </div>
+
+  <div class="generate-shell" id="generateLayout">
+    <div class="generate-selector-grid">
+      <div class="operation-panel" id="generateOperationPanel"></div>
+      <div class="family-panel" id="generateFamilyPanel"></div>
+      <div class="model-panel" id="generateModelPanel"></div>
+    </div>
+    <div class="generate-stage" id="paneGenerate">
       <div class="gen-panel">
-        <h3 id="selectedModelName">请选择模型</h3>
-        <div class="model-info" id="selectedModelInfo">从左侧列表选择一个模型开始测试</div>
+          <h3 id="selectedModelName">请选择模型</h3>
+          <div class="model-info" id="selectedModelInfo">从左侧列表选择一个模型开始测试</div>
+          <div class="form-hint" id="preferredTokenHint">当前来源 Token 绑定: 无，将按号池调度。</div>
 
-        <div class="form-group">
-          <label>提示词 (Prompt)</label>
-          <textarea id="promptInput" placeholder="描述你想生成的内容...">一只可爱的橘猫趴在窗台上晒太阳，窗外是樱花盛开的春天</textarea>
-        </div>
-
-        <div class="form-group" id="imageUploadGroup" style="display:none;">
-          <label>上传图片 <span id="imageLimit" style="color:#666;font-size:12px;"></span></label>
-          <div class="image-upload-area" id="imageUploadArea">
-            <div class="image-upload-hint" id="imageHint">点击或拖拽上传图片</div>
-            <div class="image-preview-list" id="imagePreviewList"></div>
+          <div class="form-group">
+            <label>提示词 (Prompt)</label>
+            <textarea id="promptInput" placeholder="描述你想生成的内容...">一只可爱的橘猫趴在窗台上晒太阳，窗外是樱花盛开的春天</textarea>
           </div>
-          <input type="file" id="imageFileInput" accept="image/*" multiple style="display:none;">
-        </div>
 
-        <button class="btn-generate" id="btnGenerate" disabled>选择模型后开始生成</button>
-      </div>
+          <div class="form-group" id="imageUploadGroup" style="display:none;">
+            <label>上传图片 <span id="imageLimit" style="color:#666;font-size:12px;"></span></label>
+            <div class="image-upload-area" id="imageUploadArea" tabindex="0">
+              <div class="image-upload-hint" id="imageHint">点击、拖拽或粘贴图片</div>
+              <div class="image-preview-list" id="imagePreviewList"></div>
+            </div>
+            <div class="form-hint" id="imageUploadHintText">选择模型后可上传图片。</div>
+            <input type="file" id="imageFileInput" accept="image/*" multiple style="display:none;">
+          </div>
+
+          <div class="form-group" id="videoSourceGroup" style="display:none;">
+            <label>源视频 Media ID</label>
+            <input type="text" id="videoSourceInput" placeholder="例如: c1d3787f-2272-47b8-a2ba-cfd975db5972">
+            <div class="inline-actions">
+              <button type="button" class="btn-secondary" id="btnUseLastVideo">使用最近结果</button>
+              <span class="tag-pill" id="lastVideoMediaTag">最近视频 ID: 暂无</span>
+            </div>
+            <div class="form-hint" id="videoSourceHint">续写或编辑视频时必填；可直接复用上一次生成结果里的 media id。</div>
+          </div>
+
+          <div class="form-group" id="videoEditRangeGroup" style="display:none;">
+            <label>编辑时间范围</label>
+            <div class="inline-fields">
+              <div>
+                <input type="number" id="editStartFrameInput" min="0" step="0.01" value="0" placeholder="开始时间（秒）">
+              </div>
+              <div>
+                <input type="number" id="editEndFrameInput" min="0" step="0.01" value="4" placeholder="结束时间（秒）">
+              </div>
+            </div>
+            <div class="form-hint">Omni Flash 编辑视频会把该时间区间通过 `edit://...start_time/end_time` 传给后端。</div>
+          </div>
+
+          <button class="btn-generate" id="btnGenerate" disabled>选择模型后开始生成</button>
+        </div>
 
       <div class="output-panel">
         <h3><span class="status-dot status-idle" id="statusDot"></span> <span id="statusText">等待中</span></h3>
+        <div class="form-hint" id="requestMeta">本次请求 Token: 暂无</div>
+        <div class="form-hint">这里只表示本次命中的账号，不代表所有 token 都已经尝试失败。</div>
         <div class="output-log" id="outputLog">准备就绪，选择模型并点击生成按钮开始...</div>
         <div class="output-result" id="outputResult"></div>
       </div>
     </div>
   </div>
+
+  <div class="content-pane hidden" id="paneHistory">
+    <div class="workbench-layout">
+      <div class="workbench-panel">
+        <div class="workbench-head">
+          <h3>账号与项目</h3>
+          <button type="button" class="btn-secondary" id="btnRefreshWorkbench">刷新账号</button>
+        </div>
+        <div class="workbench-note">账号、项目、媒体分栏选择。只有点击到对应层级时，才异步加载下一层数据，不再把内容追加到列表下面。</div>
+        <div class="workbench-selector-grid">
+          <div class="selector-card">
+            <div class="selector-card-head">
+              <div class="selector-card-head-main">
+                <div class="selector-card-title">账号</div>
+                <div class="selector-card-meta">按 token 懒加载</div>
+              </div>
+            </div>
+            <div class="selector-card-body" id="workbenchAccounts">
+              <div class="selector-empty">请先登录后台后再打开 /test，媒体工作台需要管理员登录态。</div>
+            </div>
+          </div>
+          <div class="selector-card">
+            <div class="selector-card-head">
+              <div class="selector-card-head-main">
+                <div class="selector-card-title">项目</div>
+                <div class="selector-card-meta">先选账号</div>
+              </div>
+            </div>
+            <div class="selector-card-body" id="workbenchProjects">
+              <div class="selector-empty">先选择一个账号，再查看该账号下的项目。</div>
+            </div>
+          </div>
+          <div class="selector-card">
+            <div class="selector-card-head">
+              <div class="selector-card-head-main">
+                <div class="selector-card-title">媒体</div>
+                <div class="selector-card-meta" id="workbenchUploadContext">先选项目</div>
+              </div>
+              <div class="selector-card-head-actions">
+                <button type="button" class="btn-secondary" id="btnChooseWorkbenchFile">上传</button>
+              </div>
+            </div>
+            <div class="selector-card-body">
+              <input type="file" id="workbenchUploadFileInput" accept="image/*,video/*" style="display:none;">
+              <div class="workbench-upload-inline">
+                <div class="workbench-upload-file" id="workbenchUploadFileMeta">未选择文件。</div>
+                <div class="workbench-upload-status" id="workbenchUploadStatus"></div>
+              </div>
+              <div id="workbenchMediaList">
+                <div class="selector-empty">先选择一个项目，再加载该项目下的媒体。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="preview-panel">
+        <div class="preview-card" id="workbenchPreview">
+          <div class="preview-empty">先选择账号、项目、媒体。右侧只负责预览当前媒体和触发基于该媒体的继续生成。</div>
+        </div>
+      </div>
+
+<div class="modal-overlay hidden" id="derivedModal">
+  <div class="modal-shell">
+    <div class="modal-head">
+      <div>
+        <h3 id="derivedModalTitle">基于媒体继续生成</h3>
+        <div class="modal-subtitle" id="derivedModalSubtitle">选择模型后，直接预览并编辑视频片段</div>
+      </div>
+      <button type="button" class="modal-close" id="btnCloseDerivedModal">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-sidebar-stack">
+        <div class="operation-panel" id="derivedOperationPanel"></div>
+        <div class="family-panel" id="derivedFamilyPanel"></div>
+        <div class="model-panel" id="derivedModelPanel"></div>
+      </div>
+      <div class="modal-main-stack">
+        <div class="modal-main-card derived-editor-card">
+          <div class="derived-editor-head">
+            <div class="derived-editor-title">
+              <h3 id="derivedSelectedModelName">请选择模型</h3>
+              <div class="derived-editor-sub" id="derivedSelectedModelInfo">先选模型，再拖动时间轴调整片段。</div>
+            </div>
+            <div class="derived-source-chip" id="derivedSourceChip">视频片段</div>
+          </div>
+          <div class="derived-preview-shell" id="derivedClipPreviewShell">
+            <div class="derived-preview-frame" id="derivedClipPreviewFrame">
+              <div class="derived-preview-empty" id="derivedClipPreviewEmpty">选择编辑模型后，这里直接预览所选片段。</div>
+            </div>
+            <div class="derived-preview-caption">
+              <span id="derivedPreviewRangeLabel">片段 0:00.00 - 0:00.00</span>
+              <span id="derivedPreviewTimeLabel">0:00.00 - 0:00.00</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>提示词</label>
+            <textarea id="derivedPromptInput" placeholder="描述你希望基于该媒体继续生成什么..."></textarea>
+          </div>
+          <div class="form-group" id="derivedEditRangeGroup" style="display:none;">
+            <label>片段范围</label>
+            <div class="frame-range-panel" id="derivedEditRangePanel">
+              <div class="frame-range-meta">
+                <span class="frame-range-summary" id="derivedEditRangeSummary">0:00.00 - 0:04.00</span>
+                <span id="derivedEditRangeMeta">默认覆盖前 4 秒片段</span>
+              </div>
+              <div class="frame-range-slider" id="derivedEditRangeSlider">
+                <div class="frame-range-slider-inner">
+                  <div class="frame-range-track"></div>
+                  <div class="frame-range-selection"></div>
+                  <input type="range" id="derivedEditStartFrameRange" min="0" max="4" step="0.01" value="0" aria-label="开始时间滑块">
+                  <input type="range" id="derivedEditEndFrameRange" min="0" max="4" step="0.01" value="4" aria-label="结束时间滑块">
+                </div>
+              </div>
+              <div class="frame-range-scale">
+                <span id="derivedEditRangeScaleMin">0:00.00</span>
+                <span id="derivedEditRangeScaleMax">0:04.00</span>
+              </div>
+            </div>
+            <div class="frame-range-hidden-inputs" aria-hidden="true">
+              <input type="hidden" id="derivedEditStartFrameInput" value="0">
+              <input type="hidden" id="derivedEditEndFrameInput" value="4">
+            </div>
+            <div class="form-hint" id="derivedEditRangeHint">拖动时间轴后会自动循环预览当前时间片段。</div>
+          </div>
+          <button class="btn-generate" id="btnDerivedGenerate" disabled>选择模型后开始生成</button>
+        </div>
+        <div class="modal-main-card">
+          <h3><span class="status-dot status-idle" id="derivedStatusDot"></span> <span id="derivedStatusText">等待中</span></h3>
+          <div class="form-hint" id="derivedRequestMeta">当前派生任务尚未开始。</div>
+          <div class="modal-log" id="derivedOutputLog">在媒体工作台中选择一个媒体，然后在这个弹窗里选择模型并开始生成。</div>
+          <div class="modal-result" id="derivedOutputResult"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    </div>
+  </div>
 </div>
 
 <script>
-const STATE = { selectedModel: null, modelConfig: null, images: [], generating: false };
+const STATE = {
+  selectedModel: null,
+  modelConfig: null,
+  images: [],
+  imageFiles: [],
+  generating: false,
+  lastVideoMediaId: "",
+  adminToken: "",
+  lastSeenLogId: 0,
+  activeTab: "generate",
+  upstreamTokens: [],
+  upstreamProjectsByToken: {},
+  upstreamMediaByProject: {},
+  expandedWorkbenchTokenId: 0,
+  selectedWorkbenchTokenId: 0,
+  selectedWorkbenchProjectId: "",
+  selectedWorkbenchMediaName: "",
+  workbenchUploadFile: null,
+  workbenchUploadBusy: false,
+  preferredSourceTokenId: 0,
+  resolvingPreviewKey: "",
+  activeOperation: "",
+  activeModelFamily: "",
+  derivedModal: {
+    open: false,
+    tokenId: 0,
+    tokenEmail: "",
+    projectId: "",
+    projectName: "",
+    mediaId: "",
+    mediaName: "",
+    mediaType: "",
+    previewUrl: "",
+    selectedModel: "",
+    activeOperation: "",
+    activeModelFamily: "",
+    generating: false,
+  },
+};
 </script>
 <script>
+const GENERATE_OPERATION_CONFIGS = [
+  { id: "text_to_image", label: "生成图片", description: "纯提示词或参考图生成图片" },
+  { id: "text_to_video", label: "文生视频", description: "纯提示词生成视频" },
+  { id: "video_upscale", label: "视频放大", description: "把视频提升到更高分辨率" },
+];
+
+const DERIVED_OPERATION_CONFIGS = [
+  { id: "image_to_video", label: "转视频", description: "基于已选图片继续生成视频" },
+  { id: "edit_video", label: "编辑视频", description: "基于已选视频做编辑" },
+  { id: "extend_video", label: "续写视频", description: "基于已选视频继续生成" },
+];
+
 // Model categories for sidebar
 const MODEL_CATEGORIES = {
   "Gemini 3.1 Flash 图片": { filter: m => m.startsWith("gemini-3.1-flash-image") },
   "Gemini 3.0 Pro 图片": { filter: m => m.startsWith("gemini-3.0-pro-image") },
   "Imagen 4.0 图片": { filter: m => m.startsWith("imagen-4.0") },
+  "Omni Flash 文生视频 (T2V)": { filter: m => m.startsWith("omni-flash-t2v") },
+  "Omni Flash 图生视频 (R2V)": { filter: m => m.startsWith("omni-flash-r2v") },
+  "Omni Flash 视频编辑": { filter: m => m.startsWith("omni-flash-edit") },
   "Veo 3.1 文生视频 (T2V)": { filter: m => m.startsWith("veo_3_1_t2v") && !m.includes("4k") && !m.includes("1080p") },
   "Veo 3.1 图生视频 (I2V)": { filter: m => m.startsWith("veo_3_1_i2v") && !m.includes("4k") && !m.includes("1080p") },
   "Veo 3.1 多图视频 (R2V)": { filter: m => m.startsWith("veo_3_1_r2v") && !m.includes("4k") && !m.includes("1080p") },
@@ -186,6 +810,39 @@ const FALLBACK_MODELS = {
   "gemini-3.1-flash-image": "Image generation (alias) - aspects: landscape, portrait, square, four-three, three-four; sizes: 2k, 4k",
   "gemini-3.0-pro-image": "Image generation (alias) - aspects: landscape, portrait, square, four-three, three-four; sizes: 2k, 4k",
   "imagen-4.0-generate-preview": "Image generation (alias) - aspects: landscape, portrait",
+  "omni-flash-t2v": "Video generation (alias) - omni flash base model via abra_t2v, supports landscape/portrait via generationConfig",
+  "omni-flash-t2v_landscape": "Video generation - omni flash landscape base model via abra_t2v",
+  "omni-flash-t2v_portrait": "Video generation - omni flash portrait base model via abra_t2v",
+  "omni-flash-t2v_4s": "Video generation (alias) - omni flash 4s via abra_t2v_4s, supports landscape/portrait via generationConfig",
+  "omni-flash-t2v_landscape_4s": "Video generation - omni flash landscape 4s via abra_t2v_4s",
+  "omni-flash-t2v_portrait_4s": "Video generation - omni flash portrait 4s via abra_t2v_4s",
+  "omni-flash-t2v_6s": "Video generation (alias) - omni flash 6s via abra_t2v_6s, supports landscape/portrait via generationConfig",
+  "omni-flash-t2v_landscape_6s": "Video generation - omni flash landscape 6s via abra_t2v_6s",
+  "omni-flash-t2v_portrait_6s": "Video generation - omni flash portrait 6s via abra_t2v_6s",
+  "omni-flash-t2v_8s": "Video generation (alias) - omni flash 8s via abra_t2v_8s, supports landscape/portrait via generationConfig",
+  "omni-flash-t2v_landscape_8s": "Video generation - omni flash landscape 8s via abra_t2v_8s",
+  "omni-flash-t2v_portrait_8s": "Video generation - omni flash portrait 8s via abra_t2v_8s",
+  "omni-flash-t2v_10s": "Video generation (alias) - omni flash 10s via abra_t2v_10s, supports landscape/portrait via generationConfig",
+  "omni-flash-t2v_landscape_10s": "Video generation - omni flash landscape 10s via abra_t2v_10s",
+  "omni-flash-t2v_portrait_10s": "Video generation - omni flash portrait 10s via abra_t2v_10s",
+  "omni-flash-edit": "Video editing (alias) - omni flash edit via abra_edit, requires edit://MEDIA_ID?start_time=S&end_time=E",
+  "omni-flash-edit_landscape": "Video editing - omni flash landscape via abra_edit, requires source media id and time range",
+  "omni-flash-edit_portrait": "Video editing - omni flash portrait via abra_edit, requires source media id and time range",
+  "omni-flash-r2v": "Video generation (alias) - omni flash image-to-video via abra_r2v, supports landscape/portrait via generationConfig",
+  "omni-flash-r2v_landscape": "Video generation - omni flash R2V landscape via abra_r2v",
+  "omni-flash-r2v_portrait": "Video generation - omni flash R2V portrait via abra_r2v",
+  "omni-flash-r2v_4s": "Video generation (alias) - omni flash R2V 4s via abra_r2v_4s, supports landscape/portrait via generationConfig",
+  "omni-flash-r2v_landscape_4s": "Video generation - omni flash R2V landscape 4s via abra_r2v_4s",
+  "omni-flash-r2v_portrait_4s": "Video generation - omni flash R2V portrait 4s via abra_r2v_4s",
+  "omni-flash-r2v_6s": "Video generation (alias) - omni flash R2V 6s via abra_r2v_6s, supports landscape/portrait via generationConfig",
+  "omni-flash-r2v_landscape_6s": "Video generation - omni flash R2V landscape 6s via abra_r2v_6s",
+  "omni-flash-r2v_portrait_6s": "Video generation - omni flash R2V portrait 6s via abra_r2v_6s",
+  "omni-flash-r2v_8s": "Video generation (alias) - omni flash R2V 8s via abra_r2v_8s, supports landscape/portrait via generationConfig",
+  "omni-flash-r2v_landscape_8s": "Video generation - omni flash R2V landscape 8s via abra_r2v_8s",
+  "omni-flash-r2v_portrait_8s": "Video generation - omni flash R2V portrait 8s via abra_r2v_8s",
+  "omni-flash-r2v_10s": "Video generation (alias) - omni flash R2V 10s via abra_r2v_10s, supports landscape/portrait via generationConfig",
+  "omni-flash-r2v_landscape_10s": "Video generation - omni flash R2V landscape 10s via abra_r2v_10s",
+  "omni-flash-r2v_portrait_10s": "Video generation - omni flash R2V portrait 10s via abra_r2v_10s",
   "veo_3_1_t2v_fast": "Video generation (alias) - supports landscape/portrait via generationConfig",
   "veo_3_1_t2v_fast_4s": "Video generation (alias) - 4s, supports landscape/portrait via generationConfig",
   "veo_3_1_t2v_fast_landscape_4s": "Video generation - fast 4s landscape",
@@ -245,11 +902,1376 @@ const FALLBACK_MODELS = {
 };
 
 let ALL_MODELS = {};
+const DEFAULT_VIDEO_EDIT_END_SECONDS = 4;
+
+function getAdminToken() {
+  try {
+    return localStorage.getItem("adminToken") || "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function setConfigNote(text, warning = false) {
+  const note = document.querySelector(".config-note");
+  note.textContent = text;
+  note.classList.toggle("warning", !!warning);
+}
+
+function updateRequestMeta(log) {
+  const el = document.getElementById("requestMeta");
+  if (!log) {
+    el.textContent = "本次请求 Token: 暂无";
+    return;
+  }
+  const tokenText = log.token_email
+    ? `${log.token_email}${log.token_id ? ` (ID:${log.token_id})` : ""}`
+    : (log.token_id ? `ID:${log.token_id}` : "未知");
+  const parts = [`本次请求 Token: ${tokenText}`];
+  if (log.id) parts.push(`日志 #${log.id}`);
+  if (log.status_text) parts.push(`状态: ${log.status_text}`);
+  if (log.error_summary) parts.push(`错误: ${log.error_summary}`);
+  el.textContent = parts.join(" | ");
+}
+
+function formatTimelineTime(seconds) {
+  const normalized = Math.max(0, Number(seconds) || 0);
+  const minutes = Math.floor(normalized / 60);
+  const secs = normalized - minutes * 60;
+  return `${minutes}:${secs.toFixed(2).padStart(5, "0")}`;
+}
+
+function normalizeTimelineSeconds(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function clampTimeRange(startSeconds, endSeconds, maxSeconds) {
+  const safeMax = Math.max(0.1, normalizeTimelineSeconds(maxSeconds, DEFAULT_VIDEO_EDIT_END_SECONDS));
+  let start = Math.max(0, Math.min(safeMax, normalizeTimelineSeconds(startSeconds, 0)));
+  let end = Math.max(0, Math.min(safeMax, normalizeTimelineSeconds(endSeconds, safeMax)));
+  if (start > end) {
+    [start, end] = [end, start];
+  }
+  if (end - start < 0.01) {
+    end = Math.min(safeMax, start + 0.01);
+    if (end - start < 0.01) {
+      start = Math.max(0, end - 0.01);
+    }
+  }
+  return { start, end, max: safeMax };
+}
+
+function getDerivedEditRangeElements() {
+  return {
+    panel: document.getElementById("derivedEditRangePanel"),
+    summary: document.getElementById("derivedEditRangeSummary"),
+    meta: document.getElementById("derivedEditRangeMeta"),
+    scaleMin: document.getElementById("derivedEditRangeScaleMin"),
+    scaleMax: document.getElementById("derivedEditRangeScaleMax"),
+    startInput: document.getElementById("derivedEditStartFrameInput"),
+    endInput: document.getElementById("derivedEditEndFrameInput"),
+    startRange: document.getElementById("derivedEditStartFrameRange"),
+    endRange: document.getElementById("derivedEditEndFrameRange"),
+    hint: document.getElementById("derivedEditRangeHint"),
+  };
+}
+
+function getDerivedClipPreviewElements() {
+  return {
+    shell: document.getElementById("derivedClipPreviewShell"),
+    frame: document.getElementById("derivedClipPreviewFrame"),
+    rangeLabel: document.getElementById("derivedPreviewRangeLabel"),
+    timeLabel: document.getElementById("derivedPreviewTimeLabel"),
+    sourceChip: document.getElementById("derivedSourceChip"),
+  };
+}
+
+function getDerivedClipPreviewVideoElement() {
+  return document.getElementById("derivedClipPreviewVideo");
+}
+
+function setDerivedEditRangeBounds(maxFrame, startFrame = 0, endFrame = maxFrame) {
+  const els = getDerivedEditRangeElements();
+  if (!els.startInput || !els.endInput || !els.startRange || !els.endRange) return;
+  const bounded = clampTimeRange(startFrame, endFrame, maxFrame);
+  [els.startInput, els.endInput, els.startRange, els.endRange].forEach((input) => {
+    input.min = "0";
+    input.max = bounded.max.toFixed(2);
+    input.step = "0.01";
+  });
+  els.startInput.value = bounded.start.toFixed(2);
+  els.endInput.value = bounded.end.toFixed(2);
+  els.startRange.value = bounded.start.toFixed(2);
+  els.endRange.value = bounded.end.toFixed(2);
+}
+
+function getDerivedSelectedSegment() {
+  const els = getDerivedEditRangeElements();
+  const maxSeconds = Math.max(
+    0.1,
+    normalizeTimelineSeconds(STATE.derivedModal.videoDurationSeconds || (els.endInput && els.endInput.max), DEFAULT_VIDEO_EDIT_END_SECONDS)
+  );
+  const bounded = clampTimeRange(
+    els.startInput ? els.startInput.value : 0,
+    els.endInput ? els.endInput.value : maxSeconds,
+    maxSeconds
+  );
+  return {
+    ...bounded,
+    startTime: bounded.start,
+    endTime: bounded.end,
+  };
+}
+
+function updateDerivedClipPreviewLabels() {
+  const previewEls = getDerivedClipPreviewElements();
+  const segment = getDerivedSelectedSegment();
+  if (previewEls.rangeLabel) {
+    previewEls.rangeLabel.textContent = `片段 ${formatTimelineTime(segment.startTime)} - ${formatTimelineTime(segment.endTime)}`;
+  }
+  if (previewEls.timeLabel) {
+    const totalSeconds = Number(STATE.derivedModal.videoDurationSeconds || 0);
+    previewEls.timeLabel.textContent = totalSeconds > 0
+      ? `${formatTimelineTime(segment.startTime)} - ${formatTimelineTime(Math.min(segment.endTime, totalSeconds))} / 总长 ${formatTimelineTime(totalSeconds)}`
+      : `${formatTimelineTime(segment.startTime)} - ${formatTimelineTime(segment.endTime)}`;
+  }
+}
+
+function mountDerivedClipPreview() {
+  const previewEls = getDerivedClipPreviewElements();
+  if (!previewEls.frame) return;
+  const meta = STATE.derivedModal.selectedModel ? getModelMeta(STATE.derivedModal.selectedModel) : null;
+  const shouldShowPreview = !!(meta && meta.requiresFrameRange);
+  if (previewEls.shell) {
+    previewEls.shell.classList.toggle("active", shouldShowPreview);
+  }
+  if (!shouldShowPreview) {
+    stopDerivedSegmentPreview({ pauseVideo: true, resetTime: false });
+    previewEls.frame.innerHTML = '<div class="derived-preview-empty">选择编辑模型后，这里直接预览所选片段。</div>';
+    updateDerivedClipPreviewLabels();
+    return;
+  }
+  if (!STATE.derivedModal.previewUrl) {
+    previewEls.frame.innerHTML = '<div class="derived-preview-empty">当前视频没有可用预览地址。</div>';
+    updateDerivedClipPreviewLabels();
+    return;
+  }
+  const existing = getDerivedClipPreviewVideoElement();
+  if (existing && existing.getAttribute("src") === STATE.derivedModal.previewUrl) {
+    updateDerivedClipPreviewLabels();
+    return;
+  }
+  previewEls.frame.innerHTML = `<video id="derivedClipPreviewVideo" src="${escapeHtml(STATE.derivedModal.previewUrl)}" muted playsinline controls preload="metadata"></video>`;
+  bindDerivedClipPreviewVideoMetadata();
+  updateDerivedClipPreviewLabels();
+}
+
+function stopDerivedSegmentPreview(options = {}) {
+  const { pauseVideo = true, resetTime = false } = options;
+  STATE.derivedModal.segmentPreviewActive = false;
+  const video = getDerivedClipPreviewVideoElement();
+  if (video) {
+    if (pauseVideo) {
+      try { video.pause(); } catch (_) {}
+    }
+    if (resetTime) {
+      const segment = getDerivedSelectedSegment();
+      try { video.currentTime = Math.min(segment.startTime, Math.max(0, (video.duration || 0) - 0.05)); } catch (_) {}
+    }
+  }
+}
+
+async function ensureDerivedSegmentPreviewPlayback(restart = false) {
+  const video = getDerivedClipPreviewVideoElement();
+  if (!video || !Number.isFinite(video.duration) || video.duration <= 0) {
+    return;
+  }
+  const segment = getDerivedSelectedSegment();
+  const safeStartTime = Math.min(segment.startTime, Math.max(0, video.duration - 0.05));
+  const safeEndTime = Math.min(Math.max(segment.endTime, safeStartTime + 0.01), video.duration);
+  STATE.derivedModal.segmentPreviewActive = true;
+  updateDerivedClipPreviewLabels();
+  if (restart || video.currentTime < safeStartTime || video.currentTime > safeEndTime) {
+    try {
+      video.currentTime = safeStartTime;
+    } catch (_) {}
+  }
+  try {
+    await video.play();
+  } catch (_) {
+    STATE.derivedModal.segmentPreviewActive = false;
+  }
+}
+
+function syncDerivedSegmentPreviewAfterRangeChange(source) {
+  const video = getDerivedClipPreviewVideoElement();
+  if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return;
+  const segment = getDerivedSelectedSegment();
+  const targetTime = source === "end-range" ? segment.endTime : segment.startTime;
+  const safeTime = Math.min(targetTime, Math.max(0, video.duration - 0.05));
+  try {
+    video.currentTime = safeTime;
+  } catch (_) {}
+  ensureDerivedSegmentPreviewPlayback(true);
+}
+
+function handleDerivedPreviewTimeUpdate() {
+  if (!STATE.derivedModal.segmentPreviewActive) return;
+  const video = getDerivedClipPreviewVideoElement();
+  if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return;
+  const segment = getDerivedSelectedSegment();
+  const safeStartTime = Math.min(segment.startTime, Math.max(0, video.duration - 0.05));
+  const safeEndTime = Math.min(segment.endTime, video.duration);
+  if (video.currentTime >= safeEndTime - 0.02) {
+    try {
+      video.currentTime = safeStartTime;
+    } catch (_) {}
+    if (video.paused) {
+      video.play().catch(() => {});
+    }
+  }
+}
+
+function syncDerivedEditRangeUI(source = "input", seekPreview = false) {
+  const els = getDerivedEditRangeElements();
+  if (!els.panel || !els.startInput || !els.endInput || !els.startRange || !els.endRange) return;
+  const maxSeconds = Math.max(
+    0.1,
+    normalizeTimelineSeconds(STATE.derivedModal.videoDurationSeconds || els.endInput.max, DEFAULT_VIDEO_EDIT_END_SECONDS)
+  );
+  const startRaw = source === "start-range" ? els.startRange.value : els.startInput.value;
+  const endRaw = source === "end-range" ? els.endRange.value : els.endInput.value;
+  const bounded = clampTimeRange(startRaw, endRaw, maxSeconds);
+  els.startInput.value = bounded.start.toFixed(2);
+  els.endInput.value = bounded.end.toFixed(2);
+  els.startRange.value = bounded.start.toFixed(2);
+  els.endRange.value = bounded.end.toFixed(2);
+  const startPercent = (bounded.start / bounded.max) * 100;
+  const endPercent = (bounded.end / bounded.max) * 100;
+  els.panel.style.setProperty("--range-start", `${startPercent}%`);
+  els.panel.style.setProperty("--range-end", `${endPercent}%`);
+  if (els.summary) {
+    els.summary.textContent = `${formatTimelineTime(bounded.start)} - ${formatTimelineTime(bounded.end)}`;
+  }
+  if (els.meta) {
+    const totalSeconds = Number(STATE.derivedModal.videoDurationSeconds || 0);
+    if (totalSeconds > 0) {
+      els.meta.textContent = `${formatTimelineTime(bounded.start)} - ${formatTimelineTime(bounded.end)} / 总长 ${formatTimelineTime(totalSeconds)}`;
+    } else {
+      els.meta.textContent = `视频元数据加载后会自动同步可选时长`;
+    }
+  }
+  if (els.scaleMin) els.scaleMin.textContent = "0:00.00";
+  if (els.scaleMax) {
+    const totalSeconds = Number(STATE.derivedModal.videoDurationSeconds || 0);
+    els.scaleMax.textContent = totalSeconds > 0
+      ? formatTimelineTime(totalSeconds)
+      : formatTimelineTime(bounded.max);
+  }
+  if (els.hint) {
+    els.hint.textContent = Number(STATE.derivedModal.videoDurationSeconds || 0) > 0
+      ? `拖动时间轴后自动循环预览片段，并按时间范围提交编辑。`
+      : `视频元数据加载后会自动按真实时长更新片段范围。`;
+  }
+  updateDerivedClipPreviewLabels();
+  if (seekPreview) {
+    syncDerivedSegmentPreviewAfterRangeChange(source);
+  }
+}
+
+function resetDerivedEditRangeForCurrentMedia() {
+  STATE.derivedModal.videoDurationSeconds = 0;
+  STATE.derivedModal.segmentPreviewActive = false;
+  setDerivedEditRangeBounds(DEFAULT_VIDEO_EDIT_END_SECONDS, 0, DEFAULT_VIDEO_EDIT_END_SECONDS);
+  syncDerivedEditRangeUI();
+  stopDerivedSegmentPreview({ pauseVideo: false, resetTime: false });
+}
+
+function applyDerivedVideoDuration(durationSeconds) {
+  const normalized = Number(durationSeconds);
+  if (!Number.isFinite(normalized) || normalized <= 0) return;
+  STATE.derivedModal.videoDurationSeconds = normalized;
+  setDerivedEditRangeBounds(normalized, 0, normalized);
+  syncDerivedEditRangeUI();
+  ensureDerivedSegmentPreviewPlayback(true);
+}
+
+function bindDerivedEditRangeControls() {
+  if (STATE.derivedModal.rangeControlsBound) return;
+  const els = getDerivedEditRangeElements();
+  if (!els.startInput || !els.endInput || !els.startRange || !els.endRange) return;
+  els.startInput.addEventListener("input", () => syncDerivedEditRangeUI("start-input"));
+  els.endInput.addEventListener("input", () => syncDerivedEditRangeUI("end-input"));
+  els.startRange.addEventListener("input", () => syncDerivedEditRangeUI("start-range", true));
+  els.endRange.addEventListener("input", () => syncDerivedEditRangeUI("end-range", true));
+  STATE.derivedModal.rangeControlsBound = true;
+}
+
+function bindDerivedClipPreviewVideoMetadata() {
+  const video = getDerivedClipPreviewVideoElement();
+  if (!video) return;
+  const applyDuration = () => {
+    if (Number.isFinite(video.duration) && video.duration > 0) {
+      applyDerivedVideoDuration(video.duration);
+    }
+  };
+  video.addEventListener("loadedmetadata", applyDuration, { once: true });
+  video.addEventListener("durationchange", applyDuration);
+  video.addEventListener("timeupdate", handleDerivedPreviewTimeUpdate);
+  video.addEventListener("ended", handleDerivedPreviewTimeUpdate);
+  if (video.readyState >= 1) {
+    applyDuration();
+  }
+}
+
+function escapeHtml(text) {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function setWorkbenchPreviewHtml(html) {
+  document.getElementById("workbenchPreview").innerHTML = html;
+}
+
+function updatePreferredTokenHint() {
+  const el = document.getElementById("preferredTokenHint");
+  if (!el) return;
+  if (!STATE.preferredSourceTokenId) {
+    el.textContent = "当前来源 Token 绑定: 无，将按号池调度。";
+    return;
+  }
+  const token = STATE.upstreamTokens.find(item => Number(item.id || 0) === Number(STATE.preferredSourceTokenId || 0));
+  const label = token && token.email ? `${token.email} (ID:${token.id})` : `ID:${STATE.preferredSourceTokenId}`;
+  el.textContent = `当前来源 Token 绑定: ${label}。使用该媒体继续生成时会固定走这个账号。`;
+}
+
+function setWorkbenchUploadStatus(message, type = "") {
+  const el = document.getElementById("workbenchUploadStatus");
+  if (!el) return;
+  el.textContent = message || "";
+  el.classList.toggle("is-error", type === "error");
+  el.classList.toggle("is-success", type === "success");
+  el.style.display = message ? "block" : "none";
+}
+
+function getWorkbenchProjectBucketKey(tokenId, projectId) {
+  return `${Number(tokenId || 0)}:${String(projectId || "").trim()}`;
+}
+
+function findWorkbenchProject(tokenId, projectId) {
+  const bucket = STATE.upstreamProjectsByToken[String(tokenId)];
+  const projects = Array.isArray(bucket && bucket.projects) ? bucket.projects : [];
+  return projects.find(item => String(item.project_id || "") === String(projectId || "")) || null;
+}
+
+function getWorkbenchMediaBucket(tokenId, projectId) {
+  return STATE.upstreamMediaByProject[getWorkbenchProjectBucketKey(tokenId, projectId)] || {};
+}
+
+function findWorkbenchMedia(tokenId, projectId, mediaName) {
+  const bucket = getWorkbenchMediaBucket(tokenId, projectId);
+  const media = Array.isArray(bucket && bucket.media) ? bucket.media : [];
+  return media.find(item => String(item.media_id || item.name || "") === String(mediaName || "")) || null;
+}
+
+function getWorkbenchSelectedToken() {
+  return STATE.upstreamTokens.find(item => Number(item.id || 0) === Number(STATE.selectedWorkbenchTokenId || 0)) || null;
+}
+
+function getWorkbenchSelectedProject() {
+  if (!STATE.selectedWorkbenchTokenId || !STATE.selectedWorkbenchProjectId) return null;
+  return findWorkbenchProject(STATE.selectedWorkbenchTokenId, STATE.selectedWorkbenchProjectId)
+    || getWorkbenchMediaBucket(STATE.selectedWorkbenchTokenId, STATE.selectedWorkbenchProjectId).project
+    || null;
+}
+
+function guessWorkbenchUploadMediaType(file) {
+  if (!file) return "";
+  const mimeType = String(file.type || "").toLowerCase();
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("video/")) return "video";
+  const name = String(file.name || "").toLowerCase();
+  if (/\.(png|jpe?g|gif|webp|bmp|jp2)$/i.test(name)) return "image";
+  if (/\.(mp4|mov|webm|avi|m4v)$/i.test(name)) return "video";
+  return "";
+}
+
+function formatWorkbenchFileSize(size) {
+  const value = Number(size || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+async function inferWorkbenchImageAspectRatio(file) {
+  if (!file || !String(file.type || "").toLowerCase().startsWith("image/")) {
+    return "IMAGE_ASPECT_RATIO_LANDSCAPE";
+  }
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const dimensions = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve({ width: Number(img.naturalWidth || 0), height: Number(img.naturalHeight || 0) });
+      img.onerror = () => reject(new Error("image_load_failed"));
+      img.src = objectUrl;
+    });
+    const width = Number(dimensions.width || 0);
+    const height = Number(dimensions.height || 0);
+    if (!width || !height) return "IMAGE_ASPECT_RATIO_LANDSCAPE";
+    const ratio = width / height;
+    if (Math.abs(ratio - 1) <= 0.08) return "IMAGE_ASPECT_RATIO_SQUARE";
+    return ratio > 1 ? "IMAGE_ASPECT_RATIO_LANDSCAPE" : "IMAGE_ASPECT_RATIO_PORTRAIT";
+  } catch (_) {
+    return "IMAGE_ASPECT_RATIO_LANDSCAPE";
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function syncWorkbenchUploadPanel() {
+  const contextEl = document.getElementById("workbenchUploadContext");
+  const metaEl = document.getElementById("workbenchUploadFileMeta");
+  const buttonEl = document.getElementById("btnChooseWorkbenchFile");
+  if (!contextEl || !metaEl || !buttonEl) return;
+
+  const token = getWorkbenchSelectedToken();
+  const project = getWorkbenchSelectedProject();
+  const file = STATE.workbenchUploadFile;
+  const mediaType = guessWorkbenchUploadMediaType(file);
+  const contextParts = [];
+  contextParts.push(token ? `账号: ${token.email || `ID:${token.id}`}` : "账号: 未选择");
+  contextParts.push(project ? `项目: ${project.project_name || project.project_id || STATE.selectedWorkbenchProjectId}` : "项目: 未选择");
+  contextEl.textContent = contextParts.join(" | ");
+
+  if (!file) {
+    metaEl.textContent = "未选择文件。";
+  } else {
+    metaEl.textContent = `已选择: ${file.name} | ${mediaType || "unknown"} | ${formatWorkbenchFileSize(file.size)}`;
+  }
+
+  if (STATE.workbenchUploadBusy) {
+    buttonEl.textContent = "上传中...";
+  } else {
+    buttonEl.textContent = "上传";
+  }
+  buttonEl.disabled = STATE.workbenchUploadBusy || !token || !project;
+}
+
+function syncGenerateImageUploadHint() {
+  const hintEl = document.getElementById("imageUploadHintText");
+  if (!hintEl) return;
+  hintEl.textContent = "点击、拖拽或粘贴图片。";
+}
+
+function setWorkbenchUploadFile(file) {
+  STATE.workbenchUploadFile = file || null;
+  if (!file) {
+    setWorkbenchUploadStatus("");
+  } else if (!guessWorkbenchUploadMediaType(file)) {
+    setWorkbenchUploadStatus("仅支持图片或视频文件。", "error");
+  } else {
+    setWorkbenchUploadStatus("");
+  }
+  syncWorkbenchUploadPanel();
+}
+
+async function reloadWorkbenchSelectedProjectMedia(preferredMediaName = "") {
+  const token = getWorkbenchSelectedToken();
+  const project = getWorkbenchSelectedProject();
+  if (!token || !project) return;
+  const key = getWorkbenchProjectBucketKey(token.id, project.project_id || STATE.selectedWorkbenchProjectId);
+  const existing = STATE.upstreamMediaByProject[key] || {};
+  STATE.upstreamMediaByProject[key] = {
+    ...existing,
+    loading: false,
+    error: "",
+    token,
+    project,
+    media: null,
+  };
+  if (preferredMediaName) {
+    STATE.selectedWorkbenchMediaName = preferredMediaName;
+  }
+  await ensureWorkbenchProjectMediaLoaded(token, project);
+}
+
+async function uploadWorkbenchMedia() {
+  const adminToken = STATE.adminToken || getAdminToken();
+  const token = getWorkbenchSelectedToken();
+  const project = getWorkbenchSelectedProject();
+  const file = STATE.workbenchUploadFile;
+  const mediaType = guessWorkbenchUploadMediaType(file);
+
+  if (!adminToken) { alert("未检测到后台登录态"); return; }
+  if (!token || !project) { alert("请先选择账号和项目"); return; }
+  if (!file || !mediaType) { alert("请选择图片或视频文件"); return; }
+
+  const endpoint = mediaType === "image"
+    ? "/api/media/upstream/upload-image"
+    : "/api/media/upstream/upload-video";
+  const formData = new FormData();
+  formData.append("token_id", String(token.id));
+  formData.append("project_id", String(project.project_id || STATE.selectedWorkbenchProjectId || ""));
+  formData.append("file", file, file.name || "upload.bin");
+  if (mediaType === "image") {
+    formData.append("aspect_ratio", await inferWorkbenchImageAspectRatio(file));
+  }
+
+  STATE.workbenchUploadBusy = true;
+  setWorkbenchUploadStatus(`正在上传${mediaType === "image" ? "图片" : "视频"}到当前项目...`);
+  syncWorkbenchUploadPanel();
+  try {
+    const resp = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${adminToken}` },
+      body: formData,
+    });
+    let data = null;
+    try {
+      data = await resp.json();
+    } catch (_) {
+      data = null;
+    }
+    if (!resp.ok) {
+      const detail = data && data.detail ? data.detail : `HTTP ${resp.status}`;
+      throw new Error(detail);
+    }
+    const mediaId = String(data && data.media_id || "").trim();
+    setWorkbenchUploadStatus(
+      `${mediaType === "image" ? "图片" : "视频"}上传成功${mediaId ? `，media_id=${mediaId}` : ""}`,
+      "success"
+    );
+    STATE.workbenchUploadFile = null;
+    document.getElementById("workbenchUploadFileInput").value = "";
+    await reloadWorkbenchSelectedProjectMedia(mediaId);
+  } catch (e) {
+    setWorkbenchUploadStatus(`上传失败: ${e.message || "unknown error"}`, "error");
+  } finally {
+    STATE.workbenchUploadBusy = false;
+    syncWorkbenchUploadPanel();
+    renderWorkbenchPreview();
+  }
+}
+
+function getOperationIdForModel(modelId) {
+  const meta = getModelMeta(modelId);
+  if (meta.type === "image") return "text_to_image";
+  if (modelId.includes("4k") || modelId.includes("1080p")) return "video_upscale";
+  if (meta.requiresFrameRange) return "edit_video";
+  if (meta.requiresVideoId) return "extend_video";
+  if (meta.supportsImages) return "image_to_video";
+  return "text_to_video";
+}
+
+function getVisibleModelFamilies(modelIds, operationId) {
+  return Object.entries(MODEL_CATEGORIES)
+    .map(([familyName, familyDef]) => ({
+      familyName,
+      models: modelIds.filter(modelId => familyDef.filter(modelId) && getOperationIdForModel(modelId) === operationId),
+    }))
+    .filter(item => item.models.length > 0);
+}
+
+function getDerivedOperationChoices(mediaType) {
+  if (mediaType === "image") {
+    return DERIVED_OPERATION_CONFIGS.filter(item => item.id === "image_to_video");
+  }
+  if (mediaType === "video") {
+    return DERIVED_OPERATION_CONFIGS.filter(item => item.id === "edit_video" || item.id === "extend_video");
+  }
+  return [];
+}
+
+function syncDerivedActionButton() {
+  const btn = document.getElementById("btnDerivedGenerate");
+  const modelName = document.getElementById("derivedSelectedModelName");
+  const modelInfo = document.getElementById("derivedSelectedModelInfo");
+  const editRangeGroup = document.getElementById("derivedEditRangeGroup");
+  const previewEls = getDerivedClipPreviewElements();
+  const promptValue = String(document.getElementById("derivedPromptInput")?.value || "").trim();
+  const meta = STATE.derivedModal.selectedModel ? getModelMeta(STATE.derivedModal.selectedModel) : null;
+  if (!meta) {
+    modelName.textContent = "请选择模型";
+    modelInfo.textContent = "先选模型，再拖动时间轴调整片段。";
+    editRangeGroup.style.display = "none";
+    if (previewEls.shell) previewEls.shell.classList.remove("active");
+    mountDerivedClipPreview();
+    btn.disabled = true;
+    btn.textContent = "选择模型后开始生成";
+    return;
+  }
+  modelName.textContent = STATE.derivedModal.selectedModel;
+  modelInfo.textContent = meta.requiresFrameRange
+    ? "拖动时间轴后直接预览当前片段。"
+    : (ALL_MODELS[STATE.derivedModal.selectedModel] || "");
+  editRangeGroup.style.display = meta.requiresFrameRange ? "block" : "none";
+  mountDerivedClipPreview();
+  if (meta.requiresFrameRange) {
+    syncDerivedEditRangeUI();
+    ensureDerivedSegmentPreviewPlayback(true);
+  } else {
+    stopDerivedSegmentPreview({ pauseVideo: true, resetTime: false });
+  }
+  const promptReady = promptValue.length > 0;
+  btn.disabled = !!STATE.derivedModal.generating || !promptReady;
+  if (STATE.derivedModal.generating) {
+    btn.textContent = meta.requiresFrameRange ? "⏳ 编辑中..." : "⏳ 生成中...";
+  } else if (!promptReady) {
+    btn.textContent = meta.requiresFrameRange ? "请先输入编辑提示词" : "请先输入提示词";
+  } else {
+    btn.textContent = meta.requiresFrameRange ? "🎬 基于该视频编辑" : "🎬 基于该媒体生成";
+  }
+}
+
+function renderDerivedModelPicker() {
+  const operationPanel = document.getElementById("derivedOperationPanel");
+  const familyPanel = document.getElementById("derivedFamilyPanel");
+  const modelPanel = document.getElementById("derivedModelPanel");
+  if (!operationPanel || !familyPanel || !modelPanel) return;
+
+  const mediaType = String(STATE.derivedModal.mediaType || "").toLowerCase();
+  const operationChoices = getDerivedOperationChoices(mediaType);
+  const modelIds = Object.keys(ALL_MODELS).sort();
+
+  operationPanel.innerHTML = '<h4>可执行操作</h4>';
+  const opGrid = document.createElement("div");
+  opGrid.className = "operation-grid";
+  operationChoices.forEach(operation => {
+    const count = modelIds.filter(modelId => getOperationIdForModel(modelId) === operation.id).length;
+    if (!count) return;
+    const item = document.createElement("div");
+    item.className = "operation-item";
+    if (STATE.derivedModal.activeOperation === operation.id) {
+      item.classList.add("active");
+    }
+    item.innerHTML = `
+      <div class="operation-name">${escapeHtml(operation.label)} (${count})</div>
+      <div class="operation-desc">${escapeHtml(operation.description)}</div>
+    `;
+    item.onclick = () => {
+      STATE.derivedModal.activeOperation = operation.id;
+      STATE.derivedModal.activeModelFamily = "";
+      STATE.derivedModal.selectedModel = "";
+      renderDerivedModelPicker();
+      syncDerivedActionButton();
+    };
+    opGrid.appendChild(item);
+  });
+  operationPanel.appendChild(opGrid);
+
+  if (!STATE.derivedModal.activeOperation) {
+    familyPanel.innerHTML = '<h4>模型家族</h4><div class="sidebar-empty">先选择一个操作。</div>';
+    modelPanel.innerHTML = '<div class="model-panel-head"><div class="model-panel-title">模型列表</div><div class="model-panel-meta">等待选择操作</div></div>';
+    syncDerivedActionButton();
+    return;
+  }
+
+  const visibleFamilies = getVisibleModelFamilies(modelIds, STATE.derivedModal.activeOperation);
+  if (!visibleFamilies.length) {
+    familyPanel.innerHTML = '<h4>模型家族</h4><div class="sidebar-empty">当前操作下没有可用模型。</div>';
+    modelPanel.innerHTML = '<div class="model-panel-head"><div class="model-panel-title">模型列表</div><div class="model-panel-meta">暂无模型</div></div>';
+    syncDerivedActionButton();
+    return;
+  }
+
+  if (!STATE.derivedModal.activeModelFamily || !visibleFamilies.some(item => item.familyName === STATE.derivedModal.activeModelFamily)) {
+    STATE.derivedModal.activeModelFamily = visibleFamilies[0].familyName;
+  }
+
+  familyPanel.innerHTML = "<h4>模型家族</h4>";
+  const familyGrid = document.createElement("div");
+  familyGrid.className = "family-grid";
+  visibleFamilies.forEach(item => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "family-chip";
+    if (STATE.derivedModal.activeModelFamily === item.familyName) {
+      chip.classList.add("active");
+    }
+    chip.textContent = `${item.familyName} (${item.models.length})`;
+    chip.onclick = () => {
+      STATE.derivedModal.activeModelFamily = item.familyName;
+      STATE.derivedModal.selectedModel = "";
+      renderDerivedModelPicker();
+      syncDerivedActionButton();
+    };
+    familyGrid.appendChild(chip);
+  });
+  familyPanel.appendChild(familyGrid);
+
+  const activeFamily = visibleFamilies.find(item => item.familyName === STATE.derivedModal.activeModelFamily) || visibleFamilies[0];
+  modelPanel.innerHTML = `
+    <div class="model-panel-head">
+      <div class="model-panel-title">${escapeHtml(activeFamily.familyName)}</div>
+      <div class="model-panel-meta">当前家族 ${activeFamily.models.length} 个模型</div>
+    </div>
+  `;
+  const list = document.createElement("div");
+  list.className = "model-list";
+  activeFamily.models.forEach(modelId => {
+    const item = document.createElement("div");
+    item.className = "model-item";
+    if (STATE.derivedModal.selectedModel === modelId) {
+      item.classList.add("active");
+    }
+    item.innerHTML = `<span>${escapeHtml(modelId)}</span><span class="model-tag tag-video">视频</span>`;
+    item.onclick = () => {
+      STATE.derivedModal.selectedModel = modelId;
+      syncDerivedActionButton();
+      renderDerivedModelPicker();
+    };
+    list.appendChild(item);
+  });
+  modelPanel.appendChild(list);
+  syncDerivedActionButton();
+}
+
+function openDerivedModal(tokenInfo, media) {
+  STATE.derivedModal = {
+    open: true,
+    tokenId: Number(STATE.selectedWorkbenchTokenId || 0),
+    tokenEmail: String(tokenInfo.email || ""),
+    projectId: String(tokenInfo.project_id || media.project_id || ""),
+    projectName: String(tokenInfo.project_name || ""),
+    mediaId: String(media.media_id || media.name || ""),
+    mediaIndex: Number.isInteger(Number(media.media_index)) ? Number(media.media_index) : null,
+    mediaName: String(media.name || media.media_id || ""),
+    mediaType: String(media.media_type || "").toLowerCase(),
+    previewUrl: String(media.preview_url || ""),
+    selectedModel: "",
+    activeOperation: "",
+    activeModelFamily: "",
+    generating: false,
+    videoDurationSeconds: 0,
+    videoMaxSeconds: DEFAULT_VIDEO_EDIT_END_SECONDS,
+    segmentPreviewActive: false,
+    rangeControlsBound: STATE.derivedModal.rangeControlsBound === true,
+  };
+
+  const operationChoices = getDerivedOperationChoices(STATE.derivedModal.mediaType);
+  STATE.derivedModal.activeOperation = operationChoices.length ? operationChoices[0].id : "";
+  document.getElementById("derivedPromptInput").value = "";
+  setDerivedEditRangeBounds(DEFAULT_VIDEO_EDIT_END_SECONDS, 0, DEFAULT_VIDEO_EDIT_END_SECONDS);
+  document.getElementById("derivedStatusDot").className = "status-dot status-idle";
+  document.getElementById("derivedStatusText").textContent = "等待中";
+  document.getElementById("derivedRequestMeta").textContent = "当前派生任务尚未开始。";
+  document.getElementById("derivedOutputLog").textContent = "已锁定媒体上下文，请选择模型后开始生成。";
+  document.getElementById("derivedOutputResult").innerHTML = "";
+  document.getElementById("derivedModalTitle").textContent = STATE.derivedModal.mediaType === "image" ? "基于图片继续生成" : "基于视频继续编辑/生成";
+  document.getElementById("derivedModalSubtitle").textContent = "拖动片段范围，直接预览并提交编辑";
+  const sourceChip = document.getElementById("derivedSourceChip");
+  if (sourceChip) {
+    const shortMediaId = STATE.derivedModal.mediaId
+      ? `${STATE.derivedModal.mediaId.slice(0, 8)}...${STATE.derivedModal.mediaId.slice(-4)}`
+      : "未命名视频";
+    sourceChip.textContent = STATE.derivedModal.mediaIndex !== null
+      ? `#${STATE.derivedModal.mediaIndex} / ${shortMediaId}`
+      : shortMediaId;
+  }
+  bindDerivedEditRangeControls();
+  resetDerivedEditRangeForCurrentMedia();
+  mountDerivedClipPreview();
+  document.getElementById("derivedModal").classList.remove("hidden");
+  renderDerivedModelPicker();
+}
+
+function closeDerivedModal() {
+  stopDerivedSegmentPreview({ pauseVideo: true, resetTime: false, statusText: "未预览" });
+  STATE.derivedModal.open = false;
+  document.getElementById("derivedModal").classList.add("hidden");
+}
+
+function renderResultInto(resultDiv, content, onVideoMediaId) {
+  resultDiv.innerHTML = "";
+  const imgRegex = /!\[.*?\]\((.*?)\)/g;
+  let match;
+  while ((match = imgRegex.exec(content)) !== null) {
+    const img = document.createElement("img");
+    img.src = match[1];
+    img.alt = "生成结果";
+    img.loading = "lazy";
+    resultDiv.appendChild(img);
+  }
+  const videoTagRegex = /<video\b[^>]*>/gi;
+  while ((match = videoTagRegex.exec(content)) !== null) {
+    const tag = match[0];
+    const srcMatch = tag.match(/src=['"]([^'"]+)['"]/i);
+    if (!srcMatch) continue;
+    const mediaIdMatch = tag.match(/data-media-id=['"]([^'"]+)['"]/i);
+    const video = document.createElement("video");
+    video.src = srcMatch[1];
+    video.controls = true;
+    video.autoplay = true;
+    video.loop = true;
+    resultDiv.appendChild(video);
+    if (mediaIdMatch && mediaIdMatch[1] && typeof onVideoMediaId === "function") {
+      onVideoMediaId(mediaIdMatch[1]);
+    }
+  }
+}
+
+function updateSelectionPanelForCurrentState() {
+  const nameEl = document.getElementById("selectedModelName");
+  const infoEl = document.getElementById("selectedModelInfo");
+  const uploadGroup = document.getElementById("imageUploadGroup");
+  const videoSourceGroup = document.getElementById("videoSourceGroup");
+  const videoEditRangeGroup = document.getElementById("videoEditRangeGroup");
+  const btn = document.getElementById("btnGenerate");
+  const imageLimitEl = document.getElementById("imageLimit");
+
+  if (!STATE.selectedModel || !STATE.modelConfig) {
+    const activeOperation = GENERATE_OPERATION_CONFIGS.find(item => item.id === STATE.activeOperation);
+    if (activeOperation) {
+      nameEl.textContent = `请选择${activeOperation.label}模型`;
+      infoEl.textContent = `${activeOperation.description}。左侧只展示当前操作可用的模型。`;
+    } else {
+      nameEl.textContent = "请选择操作";
+      infoEl.textContent = "先在左侧选择要做什么，再挑对应模型；不会一开始展示全部模型。";
+    }
+    uploadGroup.style.display = "none";
+    videoSourceGroup.style.display = "none";
+    videoEditRangeGroup.style.display = "none";
+    btn.disabled = true;
+    btn.textContent = activeOperation ? "选择模型后开始生成" : "先选择操作";
+    return;
+  }
+
+  const meta = STATE.modelConfig;
+  nameEl.textContent = STATE.selectedModel;
+  infoEl.textContent = ALL_MODELS[STATE.selectedModel] || "";
+
+  if (meta.supportsImages) {
+    uploadGroup.style.display = "block";
+    const limitText = meta.type === "image" ? "可选，用于图生图" : `${meta.minImages}-${meta.maxImages}张`;
+    imageLimitEl.textContent = `(${limitText})`;
+    syncGenerateImageUploadHint();
+  } else {
+    uploadGroup.style.display = "none";
+  }
+  videoSourceGroup.style.display = meta.requiresVideoId ? "block" : "none";
+  videoEditRangeGroup.style.display = meta.requiresFrameRange ? "block" : "none";
+  document.getElementById("videoSourceHint").textContent = meta.requiresFrameRange
+    ? "编辑视频时必填；将通过 edit://MEDIA_ID?start_time=0.00&end_time=4.00 传给后端。"
+    : "续写视频时必填；将通过 extend://MEDIA_ID 传给后端。";
+  btn.disabled = false;
+  btn.textContent = getGenerateButtonText(meta);
+}
+
+function setActiveOperation(operationId) {
+  STATE.activeOperation = operationId || "";
+  STATE.activeModelFamily = "";
+  if (STATE.selectedModel && getOperationIdForModel(STATE.selectedModel) !== STATE.activeOperation) {
+    STATE.selectedModel = null;
+    STATE.modelConfig = null;
+  }
+  renderSidebar();
+  updateSelectionPanelForCurrentState();
+}
+
+async function ensureWorkbenchPreviewResolved(tokenId, projectId, media) {
+  if (!media) return;
+  if (String(media.preview_url || "").trim()) return;
+  const mediaKey = `${tokenId}:${projectId}:${media.media_id || media.name || ""}`;
+  if (!mediaKey || STATE.resolvingPreviewKey === mediaKey) return;
+
+  STATE.resolvingPreviewKey = mediaKey;
+  renderWorkbenchPreview();
+  try {
+    const params = new URLSearchParams({
+      token_id: String(tokenId),
+      project_id: String(projectId || media.project_id || ""),
+      media_name: String(media.media_id || media.name || ""),
+    });
+    const resp = await fetch(`/api/media/upstream/preview?${params.toString()}`, {
+      headers: { "Authorization": `Bearer ${STATE.adminToken || getAdminToken()}` }
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    media.preview_url = data.preview_url || "";
+  } catch (e) {
+    media.preview_error = e.message || "unknown error";
+  } finally {
+    STATE.resolvingPreviewKey = "";
+    renderWorkbenchTokens();
+    renderWorkbenchPreview();
+  }
+}
+
+function renderWorkbenchPreview() {
+  if (!STATE.selectedWorkbenchTokenId || !STATE.selectedWorkbenchProjectId || !STATE.selectedWorkbenchMediaName) {
+    setWorkbenchPreviewHtml('<div class="preview-empty">先从上方三栏中依次选择账号、项目、媒体。右侧只负责预览当前媒体，并基于该媒体继续编辑或生成。</div>');
+    return;
+  }
+  const media = findWorkbenchMedia(
+    STATE.selectedWorkbenchTokenId,
+    STATE.selectedWorkbenchProjectId,
+    STATE.selectedWorkbenchMediaName
+  );
+  if (!media) {
+    setWorkbenchPreviewHtml('<div class="preview-empty">当前媒体不存在，可能是上游列表刚刚刷新。</div>');
+    return;
+  }
+
+  const mediaType = String(media.media_type || "").toLowerCase();
+  const previewUrl = String(media.preview_url || "").trim();
+  const mediaKey = `${STATE.selectedWorkbenchTokenId}:${STATE.selectedWorkbenchProjectId}:${media.media_id || media.name || ""}`;
+  const isResolvingPreview = STATE.resolvingPreviewKey === mediaKey;
+  const tokenInfo = STATE.upstreamTokens.find(
+    item => Number(item.id || 0) === Number(STATE.selectedWorkbenchTokenId || 0)
+  ) || {};
+  const projectInfo = findWorkbenchProject(STATE.selectedWorkbenchTokenId, STATE.selectedWorkbenchProjectId)
+    || getWorkbenchMediaBucket(STATE.selectedWorkbenchTokenId, STATE.selectedWorkbenchProjectId).project
+    || {};
+  const actionLabel = mediaType === "image" ? "基于此图继续生成" : "基于此视频继续操作";
+  const previewBox = previewUrl
+    ? (mediaType === "video"
+      ? `<video src="${escapeHtml(previewUrl)}" controls preload="metadata"></video>`
+      : `<img src="${escapeHtml(previewUrl)}" alt="${escapeHtml(media.name || "media")}">`)
+    : (isResolvingPreview
+      ? '<div class="preview-empty">正在解析上游媒体预览地址...</div>'
+      : `<div class="preview-empty">该媒体当前没有可直接预览的 URL，可先使用 media name / media id 继续流转。${media.preview_error ? `<br>解析失败: ${escapeHtml(media.preview_error)}` : ""}</div>`);
+
+  setWorkbenchPreviewHtml(`
+    <div class="preview-title">${escapeHtml(media.name || "未命名媒体")}</div>
+    <div class="preview-meta">
+      <span>Token: ${escapeHtml(tokenInfo.email || `ID:${STATE.selectedWorkbenchTokenId}`)}</span>
+      <span>类型: ${escapeHtml(media.media_type || "unknown")}</span>
+      <span>状态: ${escapeHtml(media.status || "unknown")}</span>
+      ${media.media_id ? `<span>mediaId: ${escapeHtml(media.media_id)}</span>` : ""}
+      <span>项目: ${escapeHtml(projectInfo.project_name || projectInfo.project_id || STATE.selectedWorkbenchProjectId)}</span>
+      ${media.create_time ? `<span>创建: ${escapeHtml(media.create_time)}</span>` : ""}
+      ${(media.width && media.height) ? `<span>尺寸: ${escapeHtml(`${media.width}x${media.height}`)}</span>` : ""}
+    </div>
+    <div class="preview-box">${previewBox}</div>
+    <div class="preview-actions">
+      <button type="button" class="btn-secondary" id="btnUseWorkbenchMedia">${actionLabel}</button>
+      ${previewUrl ? `<a class="media-link" href="${escapeHtml(previewUrl)}" target="_blank" rel="noreferrer">打开原始媒体</a>` : ""}
+    </div>
+    <div class="form-hint">${mediaType === "image"
+      ? "会打开一个新的派生生成弹窗。你在弹窗里选择模型并开始生成，且会固定沿用该图片所属 token / project / mediaId。"
+      : "会打开一个新的派生生成弹窗。你在弹窗里选择编辑或续写模型并开始生成，且会固定沿用该视频所属 token / project / mediaId。"}</div>
+  `);
+
+  const btn = document.getElementById("btnUseWorkbenchMedia");
+  if (btn) {
+    btn.onclick = () => {
+      openDerivedModal({
+        ...tokenInfo,
+        project_id: projectInfo.project_id || STATE.selectedWorkbenchProjectId,
+        project_name: projectInfo.project_name || "",
+      }, media);
+    };
+  }
+}
+
+function renderWorkbenchTokens() {
+  const accountsContainer = document.getElementById("workbenchAccounts");
+  const projectsContainer = document.getElementById("workbenchProjects");
+  const mediaContainer = document.getElementById("workbenchMediaList");
+  if (!accountsContainer || !projectsContainer || !mediaContainer) return;
+  syncWorkbenchUploadPanel();
+
+  if (!Array.isArray(STATE.upstreamTokens) || !STATE.upstreamTokens.length) {
+    accountsContainer.innerHTML = '<div class="selector-empty">暂无可展示的账号。</div>';
+    projectsContainer.innerHTML = '<div class="selector-empty">先选择一个账号，再查看该账号下的项目。</div>';
+    mediaContainer.innerHTML = '<div class="selector-empty">先选择一个项目，再加载该项目下的媒体。</div>';
+    return;
+  }
+
+  accountsContainer.innerHTML = "";
+  STATE.upstreamTokens.forEach(item => {
+    const tokenId = Number(item.id || 0);
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "selector-item";
+    if (STATE.selectedWorkbenchTokenId === tokenId) {
+      row.classList.add("active");
+    }
+    row.innerHTML = `
+      <div class="selector-item-title">${escapeHtml(item.email || `Token #${tokenId}`)}</div>
+      <div class="selector-item-sub">
+        <span>${escapeHtml(item.is_active ? "active" : "inactive")}</span>
+        <span>credits: ${escapeHtml(String(item.credits || 0))}</span>
+      </div>
+      <div class="selector-item-meta">
+        <span>${escapeHtml(item.current_project_name || item.current_project_id || "未绑定默认项目")}</span>
+      </div>
+    `;
+    row.onclick = async () => {
+      const changedToken = STATE.selectedWorkbenchTokenId !== tokenId;
+      STATE.expandedWorkbenchTokenId = tokenId;
+      STATE.selectedWorkbenchTokenId = tokenId;
+      if (changedToken) {
+        STATE.selectedWorkbenchProjectId = "";
+        STATE.selectedWorkbenchMediaName = "";
+      }
+      renderWorkbenchTokens();
+      renderWorkbenchPreview();
+      await ensureWorkbenchProjectsLoaded(item);
+    };
+    accountsContainer.appendChild(row);
+  });
+
+  if (!STATE.selectedWorkbenchTokenId) {
+    projectsContainer.innerHTML = '<div class="selector-empty">先选择一个账号，再查看该账号下的项目。</div>';
+    mediaContainer.innerHTML = '<div class="selector-empty">先选择一个项目，再加载该项目下的媒体。</div>';
+    return;
+  }
+
+  const selectedToken = STATE.upstreamTokens.find(
+    item => Number(item.id || 0) === Number(STATE.selectedWorkbenchTokenId || 0)
+  );
+  const projectBucket = STATE.upstreamProjectsByToken[String(STATE.selectedWorkbenchTokenId)] || {};
+  const projects = Array.isArray(projectBucket.projects) ? projectBucket.projects : [];
+  if (projectBucket.loading) {
+    projectsContainer.innerHTML = '<div class="selector-empty">正在加载该账号的项目列表...</div>';
+  } else if (projectBucket.error) {
+    projectsContainer.innerHTML = `<div class="selector-empty">项目列表加载失败: ${escapeHtml(projectBucket.error)}</div>`;
+  } else if (!projects.length) {
+    projectsContainer.innerHTML = '<div class="selector-empty">该账号暂无可选项目。</div>';
+  } else {
+    projectsContainer.innerHTML = "";
+    projects.forEach(project => {
+      const projectId = String(project.project_id || "");
+      const mediaBucket = getWorkbenchMediaBucket(STATE.selectedWorkbenchTokenId, projectId);
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "selector-item";
+      if (STATE.selectedWorkbenchProjectId === projectId) {
+        row.classList.add("active");
+      }
+      row.innerHTML = `
+        <div class="selector-item-title">${escapeHtml(project.project_name || projectId || "未命名项目")}</div>
+        <div class="selector-item-sub">
+          <span>${escapeHtml(project.is_current ? "当前项目" : "项目池项目")}</span>
+          <span>${escapeHtml(mediaBucket.loading ? "媒体加载中..." : Array.isArray(mediaBucket.media) ? `${mediaBucket.media.length} 个媒体` : "点击加载媒体")}</span>
+        </div>
+        <div class="selector-item-meta">
+          <span>${escapeHtml(projectId)}</span>
+        </div>
+      `;
+      row.onclick = async () => {
+        STATE.selectedWorkbenchTokenId = Number(selectedToken && selectedToken.id || 0);
+        STATE.selectedWorkbenchProjectId = projectId;
+        STATE.selectedWorkbenchMediaName = "";
+        renderWorkbenchTokens();
+        renderWorkbenchPreview();
+        await ensureWorkbenchProjectMediaLoaded(selectedToken, project);
+      };
+      projectsContainer.appendChild(row);
+    });
+  }
+
+  if (!STATE.selectedWorkbenchProjectId) {
+    mediaContainer.innerHTML = '<div class="selector-empty">先选择一个项目，再加载该项目下的媒体。</div>';
+    return;
+  }
+
+  const mediaBucket = getWorkbenchMediaBucket(STATE.selectedWorkbenchTokenId, STATE.selectedWorkbenchProjectId);
+  const media = Array.isArray(mediaBucket.media) ? mediaBucket.media : [];
+  if (mediaBucket.loading) {
+    mediaContainer.innerHTML = '<div class="selector-empty">正在加载该项目下的媒体...</div>';
+  } else if (mediaBucket.error) {
+    mediaContainer.innerHTML = `<div class="selector-empty">项目媒体加载失败: ${escapeHtml(mediaBucket.error)}</div>`;
+  } else if (!media.length) {
+    mediaContainer.innerHTML = '<div class="selector-empty">该项目暂无识别出的媒体。</div>';
+  } else {
+    mediaContainer.innerHTML = "";
+    media.forEach(entry => {
+      const mediaName = String(entry.media_id || entry.name || "");
+      const previewUrl = String(entry.preview_url || "").trim();
+      const thumb = previewUrl
+        ? (String(entry.media_type || "").toLowerCase() === "video"
+          ? `<video src="${escapeHtml(previewUrl)}" muted preload="metadata"></video>`
+          : `<img src="${escapeHtml(previewUrl)}" alt="${escapeHtml(mediaName || "media")}">`)
+        : '<span>无预览</span>';
+      const row = document.createElement("div");
+      row.className = "media-item";
+      if (STATE.selectedWorkbenchMediaName === mediaName) {
+        row.classList.add("active");
+      }
+      row.innerHTML = `
+        <div class="media-thumb">${thumb}</div>
+        <div class="media-main">
+          <div class="media-name">${escapeHtml(mediaName || "未命名媒体")}</div>
+          <div class="media-meta">
+            <span>#${escapeHtml(String(entry.media_index ?? "-"))}</span>
+            <span>${escapeHtml(entry.media_type || "unknown")}</span>
+            <span>${escapeHtml(entry.status || "unknown")}</span>
+            ${entry.aspect_ratio ? `<span>${escapeHtml(entry.aspect_ratio)}</span>` : ""}
+            ${(entry.width && entry.height) ? `<span>${escapeHtml(`${entry.width}x${entry.height}`)}</span>` : ""}
+          </div>
+        </div>
+      `;
+      row.onclick = () => {
+        STATE.selectedWorkbenchMediaName = mediaName;
+        renderWorkbenchTokens();
+        renderWorkbenchPreview();
+        ensureWorkbenchPreviewResolved(STATE.selectedWorkbenchTokenId, STATE.selectedWorkbenchProjectId, entry);
+      };
+      mediaContainer.appendChild(row);
+    });
+  }
+}
+
+async function ensureWorkbenchProjectsLoaded(tokenItem) {
+  const tokenId = Number(tokenItem.id || 0);
+  if (!tokenId) return;
+  const key = String(tokenId);
+  const bucket = STATE.upstreamProjectsByToken[key] || {};
+  if (bucket.loading || Array.isArray(bucket.projects)) {
+    renderWorkbenchTokens();
+    return;
+  }
+
+  STATE.upstreamProjectsByToken[key] = {
+    ...bucket,
+    loading: true,
+    error: "",
+    projects: null,
+  };
+  renderWorkbenchTokens();
+
+  try {
+    const resp = await fetch(`/api/media/upstream/projects?token_id=${encodeURIComponent(tokenId)}`, {
+      headers: { "Authorization": `Bearer ${STATE.adminToken || getAdminToken()}` }
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    STATE.upstreamProjectsByToken[key] = {
+      loading: false,
+      error: "",
+      token: data.token || tokenItem,
+      projects: Array.isArray(data.projects) ? data.projects : [],
+    };
+  } catch (e) {
+    STATE.upstreamProjectsByToken[key] = {
+      loading: false,
+      error: e.message || "unknown error",
+      token: tokenItem,
+      projects: [],
+    };
+  }
+
+  renderWorkbenchTokens();
+  renderWorkbenchPreview();
+}
+
+async function ensureWorkbenchProjectMediaLoaded(tokenItem, projectInfo) {
+  const tokenId = Number(tokenItem && tokenItem.id || 0);
+  const projectId = String(projectInfo && projectInfo.project_id || "").trim();
+  if (!tokenId || !projectId) return;
+  const key = getWorkbenchProjectBucketKey(tokenId, projectId);
+  const bucket = STATE.upstreamMediaByProject[key] || {};
+  if (bucket.loading || Array.isArray(bucket.media)) {
+    renderWorkbenchTokens();
+    return;
+  }
+
+  STATE.upstreamMediaByProject[key] = {
+    ...bucket,
+    loading: true,
+    error: "",
+    token: tokenItem,
+    project: projectInfo,
+    media: null,
+  };
+  renderWorkbenchTokens();
+  renderWorkbenchPreview();
+
+  try {
+    const params = new URLSearchParams({
+      token_id: String(tokenId),
+      project_id: projectId,
+    });
+    const resp = await fetch(`/api/media/upstream/project?${params.toString()}`, {
+      headers: { "Authorization": `Bearer ${STATE.adminToken || getAdminToken()}` }
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    STATE.upstreamMediaByProject[key] = {
+      loading: false,
+      error: "",
+      token: data.token || tokenItem,
+      project: {
+        ...projectInfo,
+        project_id: String((data.token || {}).project_id || projectId),
+        project_name: String((data.token || {}).project_name || projectInfo.project_name || ""),
+      },
+      media: Array.isArray(data.media) ? data.media.map((item, index) => ({ ...item, media_index: index })) : [],
+    };
+    if (
+      STATE.selectedWorkbenchTokenId === tokenId &&
+      STATE.selectedWorkbenchProjectId === projectId &&
+      !STATE.selectedWorkbenchMediaName &&
+      Array.isArray(data.media) &&
+      data.media.length
+    ) {
+      STATE.selectedWorkbenchMediaName = String((data.media[0] || {}).media_id || (data.media[0] || {}).name || "");
+    }
+  } catch (e) {
+    STATE.upstreamMediaByProject[key] = {
+      loading: false,
+      error: e.message || "unknown error",
+      token: tokenItem,
+      project: projectInfo,
+      media: [],
+    };
+  }
+
+  renderWorkbenchTokens();
+  renderWorkbenchPreview();
+  if (
+    STATE.selectedWorkbenchTokenId === tokenId &&
+    STATE.selectedWorkbenchProjectId === projectId &&
+    STATE.selectedWorkbenchMediaName
+  ) {
+    const selectedMedia = findWorkbenchMedia(tokenId, projectId, STATE.selectedWorkbenchMediaName);
+    if (selectedMedia) {
+      ensureWorkbenchPreviewResolved(tokenId, projectId, selectedMedia);
+    }
+  }
+}
+
+async function refreshWorkbenchTokens() {
+  const adminToken = STATE.adminToken || getAdminToken();
+  const container = document.getElementById("workbenchAccounts");
+  if (!adminToken) {
+    container.innerHTML = '<div class="selector-empty">未检测到后台登录态，无法读取媒体工作台数据。</div>';
+    syncWorkbenchUploadPanel();
+    return;
+  }
+  container.innerHTML = '<div class="selector-empty">正在加载账号列表...</div>';
+  try {
+    const resp = await fetch("/api/media/upstream/tokens?active_only=true", {
+      headers: { "Authorization": `Bearer ${adminToken}` }
+    });
+    if (!resp.ok) {
+      if (resp.status === 401) {
+        container.innerHTML = '<div class="selector-empty">后台登录态已失效，请重新登录后台后刷新本页。</div>';
+        return;
+      }
+      throw new Error(`HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    STATE.upstreamTokens = Array.isArray(data.tokens) ? data.tokens : [];
+    STATE.upstreamProjectsByToken = {};
+    STATE.upstreamMediaByProject = {};
+    STATE.expandedWorkbenchTokenId = 0;
+    STATE.selectedWorkbenchTokenId = 0;
+    STATE.selectedWorkbenchProjectId = "";
+    STATE.selectedWorkbenchMediaName = "";
+    STATE.workbenchUploadFile = null;
+    STATE.workbenchUploadBusy = false;
+    setWorkbenchUploadStatus("");
+    STATE.preferredSourceTokenId = 0;
+    renderWorkbenchTokens();
+    renderWorkbenchPreview();
+    updatePreferredTokenHint();
+    syncGenerateImageUploadHint();
+  } catch (e) {
+    container.innerHTML = `<div class="selector-empty">加载账号列表失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function switchTab(nextTab) {
+  STATE.activeTab = nextTab;
+  document.querySelectorAll(".content-tab").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.tab === nextTab);
+  });
+  document.getElementById("generateLayout").classList.toggle("hidden", nextTab !== "generate");
+  document.getElementById("paneHistory").classList.toggle("hidden", nextTab !== "history");
+}
+
+function getExpectedOperation() {
+  const meta = STATE.modelConfig;
+  if (!meta) return "";
+  if (meta.type === "image") return "generate_image";
+  if (meta.requiresFrameRange) return "edit_video";
+  if (meta.requiresVideoId) return "extend_video";
+  return "generate_video";
+}
+
+async function fetchLatestRequestMeta() {
+  const adminToken = STATE.adminToken || getAdminToken();
+  if (!adminToken) return null;
+  try {
+    const resp = await fetch("/api/logs?limit=10", {
+      headers: { "Authorization": `Bearer ${adminToken}` }
+    });
+    if (!resp.ok) return null;
+    const logs = await resp.json();
+    const expectedOperation = getExpectedOperation();
+    const matched = (Array.isArray(logs) ? logs : []).find(log => {
+      const logId = Number(log.id || 0);
+      return logId > STATE.lastSeenLogId && (!expectedOperation || log.operation === expectedOperation);
+    }) || (Array.isArray(logs) ? logs : []).find(log => !expectedOperation || log.operation === expectedOperation);
+    if (matched) {
+      STATE.lastSeenLogId = Math.max(STATE.lastSeenLogId, Number(matched.id || 0));
+      updateRequestMeta(matched);
+      return matched;
+    }
+  } catch (_) {
+    // ignore
+  }
+  return null;
+}
+
+async function hydrateApiKeyFromAdmin() {
+  const apiKeyInput = document.getElementById("apiKey");
+  STATE.adminToken = getAdminToken();
+  if (!STATE.adminToken) {
+    setConfigNote("未检测到后台登录态，测试页不会自动回填 API Key；请先登录后台后再打开 /test。", true);
+    return;
+  }
+  try {
+    const resp = await fetch("/api/admin/config", {
+      headers: { "Authorization": `Bearer ${STATE.adminToken}` }
+    });
+    if (!resp.ok) {
+      if (resp.status === 401) {
+        try { localStorage.removeItem("adminToken"); } catch (_) {}
+        setConfigNote("后台登录态已失效，请重新登录后台后再打开 /test，API Key 将自动回填。", true);
+        return;
+      }
+      setConfigNote("已检测到后台登录态，但读取 API Key 失败；可手工输入后继续测试。", true);
+      return;
+    }
+    const config = await resp.json();
+    if (!apiKeyInput.value.trim() && config.api_key) {
+      apiKeyInput.value = config.api_key;
+    }
+    setConfigNote("已通过后台登录态自动回填 API Key；如需切换可手工覆盖。");
+  } catch (_) {
+    setConfigNote("已检测到管理员登录态，但读取 API Key 失败；可手工输入后继续测试。", true);
+  }
+}
 
 function applyFallbackModels(reason) {
   console.warn("使用内置候选模型列表:", reason);
   ALL_MODELS = { ...FALLBACK_MODELS };
+  if (STATE.selectedModel && !ALL_MODELS[STATE.selectedModel]) {
+    STATE.selectedModel = null;
+    STATE.modelConfig = null;
+  }
   renderSidebar();
+  updateSelectionPanelForCurrentState();
 }
 
 async function loadModels() {
@@ -274,7 +2296,12 @@ async function loadModels() {
     }
     ALL_MODELS = {};
     items.forEach(m => { ALL_MODELS[m.id] = m.description; });
+    if (STATE.selectedModel && !ALL_MODELS[STATE.selectedModel]) {
+      STATE.selectedModel = null;
+      STATE.modelConfig = null;
+    }
     renderSidebar();
+    updateSelectionPanelForCurrentState();
   } catch (e) {
     console.error("加载模型失败:", e);
     applyFallbackModels(e.message || "load_failed");
@@ -295,94 +2322,159 @@ function getModelMeta(modelId) {
   const isI2V = modelId.includes("i2v");
   const isR2V = modelId.includes("r2v");
   const isT2V = modelId.includes("t2v");
+  const isExtend = modelId.includes("extend");
+  const isEdit = modelId.includes("omni-flash-edit");
+  const isOmniR2V = modelId.includes("omni-flash-r2v");
   const isImage = getModelType(modelId) === "image";
 
   if (isImage) return { type: "image", supportsImages: true, minImages: 0, maxImages: 5 };
   if (isI2V) return { type: "video", supportsImages: true, minImages: 1, maxImages: 2 };
-  if (isR2V) return { type: "video", supportsImages: true, minImages: 0, maxImages: 3 };
-  return { type: "video", supportsImages: false, minImages: 0, maxImages: 0 };
+  if (isR2V) return { type: "video", supportsImages: true, minImages: isOmniR2V ? 1 : 0, maxImages: 3 };
+  return {
+    type: "video",
+    supportsImages: false,
+    minImages: 0,
+    maxImages: 0,
+    requiresVideoId: isExtend || isEdit,
+    videoRefScheme: isEdit ? "edit" : (isExtend ? "extend" : null),
+    requiresFrameRange: isEdit,
+  };
+}
+
+function getGenerateButtonText(meta) {
+  if (!meta) return "选择模型后开始生成";
+  if (meta.type === "image") return "🎨 生成图片";
+  if (meta.requiresFrameRange) return "🎬 编辑视频";
+  if (meta.requiresVideoId) return "🎬 续写视频";
+  return "🎬 生成视频";
 }
 
 function renderSidebar() {
-  const sidebar = document.getElementById("modelSidebar");
-  sidebar.innerHTML = "";
+  const operationPanel = document.getElementById("generateOperationPanel");
+  const familyPanel = document.getElementById("generateFamilyPanel");
+  const modelPanel = document.getElementById("generateModelPanel");
+  if (!operationPanel || !familyPanel || !modelPanel) return;
 
   const modelIds = Object.keys(ALL_MODELS).sort();
+  operationPanel.innerHTML = '<h4>操作类型</h4>';
+  const operationGrid = document.createElement("div");
+  operationGrid.className = "operation-grid";
+
+  GENERATE_OPERATION_CONFIGS.forEach(operation => {
+    const count = modelIds.filter(modelId => getOperationIdForModel(modelId) === operation.id).length;
+    if (!count) return;
+    const item = document.createElement("div");
+    item.className = "operation-item";
+    if (STATE.activeOperation === operation.id) {
+      item.classList.add("active");
+    }
+    item.innerHTML = `
+      <div class="operation-name">${escapeHtml(operation.label)} (${count})</div>
+      <div class="operation-desc">${escapeHtml(operation.description)}</div>
+    `;
+    item.onclick = () => setActiveOperation(operation.id);
+    operationGrid.appendChild(item);
+  });
+  operationPanel.appendChild(operationGrid);
+
   if (modelIds.length === 0) {
-    sidebar.innerHTML = '<div class="model-section"><div class="model-list" style="border-radius:8px;"><div class="model-item" style="cursor:default;color:#888;">未获取到可用模型，请检查 API Key 或稍后重试</div></div></div>';
+    familyPanel.innerHTML = '<h4>模型家族</h4><div class="sidebar-empty">未获取到可用模型，请检查 API Key 或稍后重试。</div>';
+    modelPanel.innerHTML = '<div class="model-panel-head"><div class="model-panel-title">模型列表</div><div class="model-panel-meta">暂无模型</div></div>';
     return;
   }
 
-  for (const [catName, catDef] of Object.entries(MODEL_CATEGORIES)) {
-    const models = modelIds.filter(catDef.filter);
-    if (models.length === 0) continue;
-
-    const section = document.createElement("div");
-    section.className = "model-section";
-
-    const title = document.createElement("div");
-    title.className = "section-title";
-    title.innerHTML = `<span>${catName} (${models.length})</span><span class="arrow">▼</span>`;
-
-    const list = document.createElement("div");
-    list.className = "model-list";
-
-    models.forEach(modelId => {
-      const item = document.createElement("div");
-      item.className = "model-item";
-      item.dataset.model = modelId;
-
-      const type = getModelType(modelId);
-      const shortName = modelId.replace("gemini-3.1-flash-image-", "").replace("gemini-3.0-pro-image-", "").replace("imagen-4.0-generate-preview-", "");
-      item.innerHTML = `<span>${shortName}</span><span class="model-tag ${type === 'image' ? 'tag-image' : 'tag-video'}">${type === 'image' ? '图片' : '视频'}</span>`;
-      item.onclick = () => selectModel(modelId);
-      list.appendChild(item);
-    });
-
-    title.onclick = () => {
-      title.classList.toggle("collapsed");
-      list.classList.toggle("hidden");
-    };
-
-    section.appendChild(title);
-    section.appendChild(list);
-    sidebar.appendChild(section);
+  if (!STATE.activeOperation) {
+    familyPanel.innerHTML = '<h4>模型家族</h4><div class="sidebar-empty">先选择操作类型，再只显示该操作下的模型，不再默认展开全部模型。</div>';
+    modelPanel.innerHTML = '<div class="model-panel-head"><div class="model-panel-title">模型列表</div><div class="model-panel-meta">等待选择操作</div></div>';
+    return;
   }
+
+  const visibleFamilies = getVisibleModelFamilies(modelIds, STATE.activeOperation);
+  if (!visibleFamilies.length) {
+    familyPanel.innerHTML = '<h4>模型家族</h4><div class="sidebar-empty">当前操作下没有可用模型。</div>';
+    modelPanel.innerHTML = '<div class="model-panel-head"><div class="model-panel-title">模型列表</div><div class="model-panel-meta">暂无模型</div></div>';
+    return;
+  }
+
+  const selectedFamilyByModel = STATE.selectedModel
+    ? (visibleFamilies.find(item => item.models.includes(STATE.selectedModel)) || {}).familyName
+    : "";
+  if (!STATE.activeModelFamily || !visibleFamilies.some(item => item.familyName === STATE.activeModelFamily)) {
+    STATE.activeModelFamily = selectedFamilyByModel || visibleFamilies[0].familyName;
+  }
+
+  familyPanel.innerHTML = "<h4>模型家族</h4>";
+  const familyGrid = document.createElement("div");
+  familyGrid.className = "family-grid";
+  visibleFamilies.forEach(item => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "family-chip";
+    if (STATE.activeModelFamily === item.familyName) {
+      chip.classList.add("active");
+    }
+    chip.textContent = `${item.familyName} (${item.models.length})`;
+    chip.onclick = () => {
+      STATE.activeModelFamily = item.familyName;
+      renderSidebar();
+    };
+    familyGrid.appendChild(chip);
+  });
+  familyPanel.appendChild(familyGrid);
+
+  const activeFamily = visibleFamilies.find(item => item.familyName === STATE.activeModelFamily) || visibleFamilies[0];
+  modelPanel.innerHTML = `
+    <div class="model-panel-head">
+      <div class="model-panel-title">${escapeHtml(activeFamily.familyName)}</div>
+      <div class="model-panel-meta">当前家族 ${activeFamily.models.length} 个模型</div>
+    </div>
+  `;
+  const list = document.createElement("div");
+  list.className = "model-list";
+  activeFamily.models.forEach(modelId => {
+    const item = document.createElement("div");
+    item.className = "model-item";
+    item.dataset.model = modelId;
+    if (STATE.selectedModel === modelId) {
+      item.classList.add("active");
+    }
+
+    const type = getModelType(modelId);
+    const shortName = modelId
+      .replace("gemini-3.1-flash-image-", "")
+      .replace("gemini-3.0-pro-image-", "")
+      .replace("imagen-4.0-generate-preview-", "");
+    item.innerHTML = `<span>${shortName}</span><span class="model-tag ${type === 'image' ? 'tag-image' : 'tag-video'}">${type === 'image' ? '图片' : '视频'}</span>`;
+    item.onclick = () => selectModel(modelId);
+    list.appendChild(item);
+  });
+  modelPanel.appendChild(list);
 }
 
 function selectModel(modelId) {
+  const prevImages = [...STATE.images];
+  const prevImageFiles = [...STATE.imageFiles];
   STATE.selectedModel = modelId;
+  STATE.activeOperation = getOperationIdForModel(modelId);
+  const familyInfo = getVisibleModelFamilies(Object.keys(ALL_MODELS).sort(), STATE.activeOperation)
+    .find(item => item.models.includes(modelId));
+  STATE.activeModelFamily = familyInfo ? familyInfo.familyName : STATE.activeModelFamily;
   STATE.modelConfig = getModelMeta(modelId);
-  STATE.images = [];
-
-  // Update sidebar active state
-  document.querySelectorAll(".model-item").forEach(el => {
-    el.classList.toggle("active", el.dataset.model === modelId);
-  });
-
-  // Update panel
-  document.getElementById("selectedModelName").textContent = modelId;
-  document.getElementById("selectedModelInfo").textContent = ALL_MODELS[modelId] || "";
-
-  // Show/hide image upload
-  const uploadGroup = document.getElementById("imageUploadGroup");
-  const meta = STATE.modelConfig;
-  if (meta.supportsImages) {
-    uploadGroup.style.display = "block";
-    const limitText = meta.type === "image" ? "可选，用于图生图" : `${meta.minImages}-${meta.maxImages}张`;
-    document.getElementById("imageLimit").textContent = `(${limitText})`;
+  if (!STATE.modelConfig.supportsImages) {
+    STATE.images = [];
+    STATE.imageFiles = [];
   } else {
-    uploadGroup.style.display = "none";
+    STATE.images = prevImages.slice(0, STATE.modelConfig.maxImages);
+    STATE.imageFiles = prevImageFiles.slice(0, STATE.modelConfig.maxImages);
   }
 
   // Reset image previews
-  document.getElementById("imagePreviewList").innerHTML = "";
-  document.getElementById("imageHint").style.display = "block";
-
-  // Enable button
-  const btn = document.getElementById("btnGenerate");
-  btn.disabled = false;
-  btn.textContent = meta.type === "image" ? "🎨 生成图片" : "🎬 生成视频";
+  renderImagePreviews();
+  if (STATE.modelConfig.requiresVideoId && STATE.lastVideoMediaId && !document.getElementById("videoSourceInput").value.trim()) {
+    document.getElementById("videoSourceInput").value = STATE.lastVideoMediaId;
+  }
+  renderSidebar();
+  updateSelectionPanelForCurrentState();
 }
 
 // Image upload handling
@@ -402,7 +2494,34 @@ uploadArea.ondrop = (e) => {
   handleFiles(e.dataTransfer.files);
 };
 
+uploadArea.onpaste = (e) => {
+  const items = Array.from((e.clipboardData && e.clipboardData.items) || []);
+  const imageFiles = items
+    .filter(item => item && item.kind === "file" && String(item.type || "").startsWith("image/"))
+    .map(item => item.getAsFile())
+    .filter(Boolean);
+  if (!imageFiles.length) return;
+  e.preventDefault();
+  handleFiles(imageFiles);
+};
+
 fileInput.onchange = () => { handleFiles(fileInput.files); fileInput.value = ""; };
+
+const workbenchUploadFileInput = document.getElementById("workbenchUploadFileInput");
+document.getElementById("btnChooseWorkbenchFile").onclick = () => {
+  if (STATE.workbenchUploadBusy) return;
+  if (!getWorkbenchSelectedToken() || !getWorkbenchSelectedProject()) {
+    alert("请先选择账号和项目");
+    return;
+  }
+  workbenchUploadFileInput.click();
+};
+workbenchUploadFileInput.onchange = async () => {
+  const selectedFile = workbenchUploadFileInput.files && workbenchUploadFileInput.files[0];
+  setWorkbenchUploadFile(selectedFile || null);
+  if (!selectedFile || !guessWorkbenchUploadMediaType(selectedFile)) return;
+  await uploadWorkbenchMedia();
+};
 
 function handleFiles(files) {
   const maxImages = STATE.modelConfig ? STATE.modelConfig.maxImages : 5;
@@ -413,6 +2532,7 @@ function handleFiles(files) {
     const reader = new FileReader();
     reader.onload = (e) => {
       STATE.images.push(e.target.result);
+      STATE.imageFiles.push(file);
       renderImagePreviews();
     };
     reader.readAsDataURL(file);
@@ -435,11 +2555,39 @@ function renderImagePreviews() {
 
 function removeImage(idx) {
   STATE.images.splice(idx, 1);
+  STATE.imageFiles.splice(idx, 1);
   renderImagePreviews();
 }
 
+function updateLastVideoMediaTag() {
+  const tag = document.getElementById("lastVideoMediaTag");
+  tag.textContent = STATE.lastVideoMediaId ? `最近视频 ID: ${STATE.lastVideoMediaId}` : "最近视频 ID: 暂无";
+}
+
+document.getElementById("btnUseLastVideo").onclick = () => {
+  if (!STATE.lastVideoMediaId) {
+    alert("当前还没有可复用的视频 media id");
+    return;
+  }
+  document.getElementById("videoSourceInput").value = STATE.lastVideoMediaId;
+};
+document.getElementById("btnRefreshWorkbench").onclick = refreshWorkbenchTokens;
+document.getElementById("tabGenerate").onclick = () => switchTab("generate");
+document.getElementById("tabHistory").onclick = async () => {
+  switchTab("history");
+  if (!STATE.upstreamTokens.length) {
+    await refreshWorkbenchTokens();
+  }
+};
+document.getElementById("btnCloseDerivedModal").onclick = closeDerivedModal;
+document.getElementById("derivedPromptInput").addEventListener("input", syncDerivedActionButton);
+document.getElementById("derivedModal").onclick = (e) => {
+  if (e.target.id === "derivedModal") closeDerivedModal();
+};
+
 // Generation
 document.getElementById("btnGenerate").onclick = generate;
+document.getElementById("btnDerivedGenerate").onclick = submitDerivedGeneration;
 
 async function generate() {
   if (!STATE.selectedModel || STATE.generating) return;
@@ -447,9 +2595,30 @@ async function generate() {
   const baseUrl = (document.getElementById("baseUrl").value || "").trim();
   const apiKey = (document.getElementById("apiKey").value || "").trim();
   const prompt = document.getElementById("promptInput").value.trim();
+  const videoSourceId = (document.getElementById("videoSourceInput").value || "").trim();
+  const editStartFrame = (document.getElementById("editStartFrameInput").value || "").trim();
+  const editEndFrame = (document.getElementById("editEndFrameInput").value || "").trim();
   if (!prompt) { alert("请输入提示词"); return; }
   if (!apiKey) { alert("请输入 API Key"); return; }
   if (!baseUrl) { alert("请输入服务地址"); return; }
+  if (STATE.modelConfig && STATE.modelConfig.type === "video" && STATE.modelConfig.supportsImages) {
+    alert("生成测试里已移除图生视频，请在媒体工作台中选择图片后继续生成视频");
+    return;
+  }
+  if (STATE.modelConfig && STATE.modelConfig.requiresVideoId && !videoSourceId) {
+    alert("当前模型需要填写源视频 Media ID");
+    return;
+  }
+  if (STATE.modelConfig && STATE.modelConfig.requiresFrameRange) {
+    if (editStartFrame === "" || editEndFrame === "") {
+      alert("请填写开始时间和结束时间");
+      return;
+    }
+    if (Number(editStartFrame) < 0 || Number(editEndFrame) < 0 || Number(editEndFrame) < Number(editStartFrame)) {
+      alert("编辑时间范围不合法");
+      return;
+    }
+  }
 
   STATE.generating = true;
   const btn = document.getElementById("btnGenerate");
@@ -461,27 +2630,48 @@ async function generate() {
   document.getElementById("statusText").textContent = "生成中...";
   document.getElementById("outputLog").textContent = "";
   document.getElementById("outputResult").innerHTML = "";
+  updateRequestMeta(null);
 
   const log = document.getElementById("outputLog");
   const appendLog = (text) => { log.textContent += text; log.scrollTop = log.scrollHeight; };
 
-  // Build messages
-  const content = [];
-  content.push({ type: "text", text: prompt });
-  STATE.images.forEach(dataUrl => {
-    content.push({ type: "image_url", image_url: { url: dataUrl } });
-  });
-
-  const messages = [{ role: "user", content: content.length === 1 ? prompt : content }];
-
-  const body = { model: STATE.selectedModel, messages, stream: true };
-
-  const startTime = Date.now();
-  appendLog(`[${new Date().toLocaleTimeString()}] 模型: ${STATE.selectedModel}\n`);
-  appendLog(`[${new Date().toLocaleTimeString()}] 提示词: ${prompt.substring(0, 100)}${prompt.length > 100 ? '...' : ''}\n`);
-  appendLog(`[${new Date().toLocaleTimeString()}] 开始请求...\n`);
-
   try {
+    const content = [];
+    content.push({ type: "text", text: prompt });
+    STATE.images.forEach(dataUrl => {
+      content.push({ type: "image_url", image_url: { url: dataUrl } });
+    });
+    if (STATE.modelConfig && STATE.modelConfig.requiresVideoId) {
+      const videoRefUrl = STATE.modelConfig.requiresFrameRange
+        ? `edit://${videoSourceId}?start_time=${encodeURIComponent(editStartFrame)}&end_time=${encodeURIComponent(editEndFrame)}`
+        : `extend://${videoSourceId}`;
+      content.push({ type: "image_url", image_url: { url: videoRefUrl } });
+    }
+
+    const messages = [{ role: "user", content: content.length === 1 ? prompt : content }];
+    const body = { model: STATE.selectedModel, messages, stream: true };
+    const usesPinnedMedia = Boolean(
+      videoSourceId ||
+      STATE.images.some(item => /^https?:\/\//i.test(String(item || "")))
+    );
+    if (STATE.preferredSourceTokenId > 0 && usesPinnedMedia) {
+      body.preferred_token_id = STATE.preferredSourceTokenId;
+    }
+
+    const startTime = Date.now();
+    appendLog(`[${new Date().toLocaleTimeString()}] 模型: ${STATE.selectedModel}\n`);
+    appendLog(`[${new Date().toLocaleTimeString()}] 提示词: ${prompt.substring(0, 100)}${prompt.length > 100 ? '...' : ''}\n`);
+    if (STATE.preferredSourceTokenId > 0 && usesPinnedMedia) {
+      appendLog(`[${new Date().toLocaleTimeString()}] 来源 Token 绑定: ID ${STATE.preferredSourceTokenId}\n`);
+    }
+    if (STATE.modelConfig && STATE.modelConfig.requiresVideoId) {
+      appendLog(`[${new Date().toLocaleTimeString()}] 源视频: ${videoSourceId}\n`);
+    }
+    if (STATE.modelConfig && STATE.modelConfig.requiresFrameRange) {
+      appendLog(`[${new Date().toLocaleTimeString()}] 编辑时间范围: ${formatTimelineTime(editStartFrame)} - ${formatTimelineTime(editEndFrame)}\n`);
+    }
+    appendLog(`[${new Date().toLocaleTimeString()}] 开始请求...\n`);
+
     const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: "POST",
       headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -497,6 +2687,8 @@ async function generate() {
     const decoder = new TextDecoder();
     let fullContent = "";
     let buffer = "";
+  let streamHadError = false;
+  let streamErrorMessage = "";
 
     while (true) {
       const { done, value } = await reader.read();
@@ -514,7 +2706,11 @@ async function generate() {
         try {
           const parsed = JSON.parse(data);
           if (parsed.error) {
-            appendLog(`\n❌ 错误: ${JSON.stringify(parsed.error)}\n`);
+            streamHadError = true;
+            streamErrorMessage = String(parsed.error.message || parsed.error.detail || parsed.error.code || "请求失败");
+            if (!log.textContent.includes(streamErrorMessage)) {
+              appendLog(`\n❌ ${streamErrorMessage}\n`);
+            }
             continue;
           }
           const choices = parsed.choices || [];
@@ -524,6 +2720,9 @@ async function generate() {
             if (content) {
               fullContent += content;
               appendLog(content);
+              if (content.includes("❌") || content.includes("生成失败") || content.includes("request failed")) {
+                streamHadError = true;
+              }
             }
           }
         } catch (e) {
@@ -535,55 +2734,209 @@ async function generate() {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     appendLog(`\n\n[${new Date().toLocaleTimeString()}] 完成，耗时 ${elapsed}s\n`);
 
-    // Render result
+    // Render result only when actual media exists
     renderResult(fullContent);
-    dot.className = "status-dot status-done";
-    document.getElementById("statusText").textContent = `完成 (${elapsed}s)`;
+    if (streamHadError) {
+      dot.className = "status-dot status-error";
+      document.getElementById("statusText").textContent = `失败 (${elapsed}s)`;
+      if (streamErrorMessage && !log.textContent.includes(streamErrorMessage)) {
+        appendLog(`\n❌ ${streamErrorMessage}\n`);
+      }
+    } else {
+      dot.className = "status-dot status-done";
+      document.getElementById("statusText").textContent = `完成 (${elapsed}s)`;
+    }
 
   } catch (e) {
     appendLog(`\n❌ 请求失败: ${e.message}\n`);
     dot.className = "status-dot status-error";
     document.getElementById("statusText").textContent = "失败";
   } finally {
+    await fetchLatestRequestMeta();
+    if (STATE.activeTab === "history" && STATE.selectedWorkbenchTokenId && STATE.selectedWorkbenchProjectId) {
+      const mediaBucketKey = getWorkbenchProjectBucketKey(
+        STATE.selectedWorkbenchTokenId,
+        STATE.selectedWorkbenchProjectId
+      );
+      delete STATE.upstreamMediaByProject[mediaBucketKey];
+      const tokenItem = STATE.upstreamTokens.find(item => Number(item.id || 0) === STATE.selectedWorkbenchTokenId);
+      const projectInfo = findWorkbenchProject(STATE.selectedWorkbenchTokenId, STATE.selectedWorkbenchProjectId);
+      if (tokenItem && projectInfo) {
+        await ensureWorkbenchProjectMediaLoaded(tokenItem, projectInfo);
+      }
+    }
     STATE.generating = false;
     btn.disabled = false;
-    const meta = STATE.modelConfig;
-    btn.textContent = meta && meta.type === "image" ? "🎨 生成图片" : "🎬 生成视频";
+    btn.textContent = getGenerateButtonText(STATE.modelConfig);
   }
 }
 
 function renderResult(content) {
-  const resultDiv = document.getElementById("outputResult");
-  resultDiv.innerHTML = "";
+  renderResultInto(document.getElementById("outputResult"), content, (mediaId) => {
+    STATE.lastVideoMediaId = mediaId;
+    updateLastVideoMediaTag();
+  });
+}
 
-  // Extract markdown images
-  const imgRegex = /!\[.*?\]\((.*?)\)/g;
-  let match;
-  while ((match = imgRegex.exec(content)) !== null) {
-    const img = document.createElement("img");
-    img.src = match[1];
-    img.alt = "生成结果";
-    img.loading = "lazy";
-    resultDiv.appendChild(img);
+async function submitDerivedGeneration() {
+  if (!STATE.derivedModal.selectedModel || STATE.derivedModal.generating) return;
+  const baseUrl = (document.getElementById("baseUrl").value || "").trim();
+  const apiKey = (document.getElementById("apiKey").value || "").trim();
+  const prompt = document.getElementById("derivedPromptInput").value.trim();
+  const editStartFrame = (document.getElementById("derivedEditStartFrameInput").value || "").trim();
+  const editEndFrame = (document.getElementById("derivedEditEndFrameInput").value || "").trim();
+  const sourceDurationSeconds = Number(STATE.derivedModal.videoDurationSeconds || 0);
+  const meta = getModelMeta(STATE.derivedModal.selectedModel);
+
+  if (!prompt) { alert("请输入提示词"); return; }
+  if (!apiKey) { alert("请输入 API Key"); return; }
+  if (!baseUrl) { alert("请输入服务地址"); return; }
+  if (!STATE.derivedModal.mediaId) { alert("当前媒体缺少 mediaId"); return; }
+  if (meta.requiresFrameRange) {
+    if (editStartFrame === "" || editEndFrame === "") {
+      alert("请填写开始时间和结束时间");
+      return;
+    }
+    if (Number(editStartFrame) < 0 || Number(editEndFrame) < 0 || Number(editEndFrame) < Number(editStartFrame)) {
+      alert("编辑时间范围不合法");
+      return;
+    }
   }
 
-  // Extract video tags
-  const videoRegex = /<video[^>]+src=['"]([^'"]+)['"]/gi;
-  while ((match = videoRegex.exec(content)) !== null) {
-    const video = document.createElement("video");
-    video.src = match[1];
-    video.controls = true;
-    video.autoplay = true;
-    video.loop = true;
-    resultDiv.appendChild(video);
+  STATE.derivedModal.generating = true;
+  syncDerivedActionButton();
+  const dot = document.getElementById("derivedStatusDot");
+  const statusText = document.getElementById("derivedStatusText");
+  const log = document.getElementById("derivedOutputLog");
+  const result = document.getElementById("derivedOutputResult");
+  const requestMeta = document.getElementById("derivedRequestMeta");
+  dot.className = "status-dot status-running";
+  statusText.textContent = "生成中...";
+  log.textContent = "";
+  result.innerHTML = "";
+  requestMeta.textContent = `固定来源: ${STATE.derivedModal.tokenEmail || `ID:${STATE.derivedModal.tokenId}`} | project=${STATE.derivedModal.projectId} | media=${STATE.derivedModal.mediaId} | index=${STATE.derivedModal.mediaIndex ?? "-"}`;
+  const appendLog = (text) => { log.textContent += text; log.scrollTop = log.scrollHeight; };
+
+  const content = [{ type: "text", text: prompt }];
+  if (meta.requiresVideoId) {
+    const selectedMaterialIndexQuery = STATE.derivedModal.mediaIndex !== null
+      ? `&selected_material_index=${encodeURIComponent(STATE.derivedModal.mediaIndex)}`
+      : "";
+    const videoRefUrl = meta.requiresFrameRange
+      ? `edit://${STATE.derivedModal.mediaId}?start_time=${encodeURIComponent(editStartFrame)}&end_time=${encodeURIComponent(editEndFrame)}&source_duration=${encodeURIComponent(sourceDurationSeconds || "")}${selectedMaterialIndexQuery}`
+      : `extend://${STATE.derivedModal.mediaId}`;
+    content.push({ type: "image_url", image_url: { url: videoRefUrl } });
   }
 
-  // If no media found, show raw text
-  if (resultDiv.children.length === 0 && content.trim()) {
-    const pre = document.createElement("pre");
-    pre.style.cssText = "color:#aaa;font-size:13px;white-space:pre-wrap;word-break:break-all;";
-    pre.textContent = content;
-    resultDiv.appendChild(pre);
+  const body = {
+    model: STATE.derivedModal.selectedModel,
+    messages: [{ role: "user", content }],
+    stream: true,
+    preferred_token_id: STATE.derivedModal.tokenId,
+    preferred_project_id: STATE.derivedModal.projectId,
+  };
+  if (STATE.derivedModal.mediaType === "image" && meta.supportsImages) {
+    body.source_image_media_ids = [STATE.derivedModal.mediaId];
+  }
+
+  const startTime = Date.now();
+  appendLog(`[${new Date().toLocaleTimeString()}] 模型: ${STATE.derivedModal.selectedModel}\n`);
+  appendLog(`[${new Date().toLocaleTimeString()}] Token: ${STATE.derivedModal.tokenEmail || STATE.derivedModal.tokenId}\n`);
+  appendLog(`[${new Date().toLocaleTimeString()}] Project: ${STATE.derivedModal.projectId}\n`);
+  appendLog(`[${new Date().toLocaleTimeString()}] Media ID: ${STATE.derivedModal.mediaId}\n`);
+  appendLog(`[${new Date().toLocaleTimeString()}] Material Index: ${STATE.derivedModal.mediaIndex ?? "-"}\n`);
+  if (meta.requiresFrameRange) {
+    appendLog(`[${new Date().toLocaleTimeString()}] 编辑时间范围: ${formatTimelineTime(editStartFrame)} - ${formatTimelineTime(editEndFrame)}\n`);
+  }
+  appendLog(`[${new Date().toLocaleTimeString()}] 开始请求...\n`);
+
+  try {
+    const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`HTTP ${resp.status}: ${errText}`);
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let fullContent = "";
+    let buffer = "";
+    let streamHadError = false;
+    let streamErrorMessage = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+        if (data === "[DONE]") continue;
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.error) {
+            streamHadError = true;
+            streamErrorMessage = String(parsed.error.message || parsed.error.detail || parsed.error.code || "请求失败");
+            if (!log.textContent.includes(streamErrorMessage)) appendLog(`\n❌ ${streamErrorMessage}\n`);
+            continue;
+          }
+          const choices = parsed.choices || [];
+          if (choices.length > 0) {
+            const delta = choices[0].delta || {};
+            const chunk = delta.reasoning_content || delta.content || "";
+            if (chunk) {
+              fullContent += chunk;
+              appendLog(chunk);
+              if (chunk.includes("❌") || chunk.includes("生成失败") || chunk.includes("request failed")) {
+                streamHadError = true;
+              }
+            }
+          }
+        } catch (_) {}
+      }
+    }
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    appendLog(`\n\n[${new Date().toLocaleTimeString()}] 完成，耗时 ${elapsed}s\n`);
+    renderResultInto(result, fullContent, (mediaId) => {
+      STATE.lastVideoMediaId = mediaId;
+      updateLastVideoMediaTag();
+    });
+    if (streamHadError) {
+      dot.className = "status-dot status-error";
+      statusText.textContent = `失败 (${elapsed}s)`;
+      if (streamErrorMessage && !log.textContent.includes(streamErrorMessage)) {
+        appendLog(`\n❌ ${streamErrorMessage}\n`);
+      }
+    } else {
+      dot.className = "status-dot status-done";
+      statusText.textContent = `完成 (${elapsed}s)`;
+    }
+  } catch (e) {
+    appendLog(`\n❌ 请求失败: ${e.message}\n`);
+    dot.className = "status-dot status-error";
+    statusText.textContent = "失败";
+  } finally {
+    if (STATE.selectedWorkbenchTokenId && STATE.selectedWorkbenchProjectId) {
+      const mediaBucketKey = getWorkbenchProjectBucketKey(
+        STATE.selectedWorkbenchTokenId,
+        STATE.selectedWorkbenchProjectId
+      );
+      delete STATE.upstreamMediaByProject[mediaBucketKey];
+      const tokenItem = STATE.upstreamTokens.find(item => Number(item.id || 0) === STATE.selectedWorkbenchTokenId);
+      const projectInfo = findWorkbenchProject(STATE.selectedWorkbenchTokenId, STATE.selectedWorkbenchProjectId);
+      if (tokenItem && projectInfo) {
+        await ensureWorkbenchProjectMediaLoaded(tokenItem, projectInfo);
+      }
+    }
+    STATE.derivedModal.generating = false;
+    syncDerivedActionButton();
   }
 }
 
@@ -594,7 +2947,12 @@ function renderResult(content) {
   baseUrlInput.value = window.location.origin;
   baseUrlInput.addEventListener("change", loadModels);
   apiKeyInput.addEventListener("change", loadModels);
-  loadModels();
+  updateLastVideoMediaTag();
+  updatePreferredTokenHint();
+  hydrateApiKeyFromAdmin().finally(async () => {
+    await loadModels();
+    updateSelectionPanelForCurrentState();
+  });
 })();
 </script>
 </body>

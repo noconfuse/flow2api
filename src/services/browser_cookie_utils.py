@@ -29,6 +29,72 @@ _SESSION_TOKEN_COOKIE_NAMES = (
 )
 
 
+def _parse_netscape_cookie_text(raw_cookie: str, default_url: str) -> Optional[List[Dict[str, Any]]]:
+    text = str(raw_cookie or "").strip()
+    if not text or "\t" not in text:
+        return None
+
+    cookies: List[Dict[str, Any]] = []
+    saw_candidate = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#") and not line.startswith("#HttpOnly_"):
+            continue
+        parts = raw_line.split("\t")
+        if len(parts) < 7:
+            continue
+        saw_candidate = True
+
+        domain = str(parts[0] or "").strip()
+        http_only = False
+        if domain.startswith("#HttpOnly_"):
+            http_only = True
+            domain = domain[len("#HttpOnly_"):]
+
+        path = str(parts[2] or "/").strip() or "/"
+        secure = str(parts[3] or "").strip().upper() == "TRUE"
+        expires_raw = str(parts[4] or "").strip()
+        name = str(parts[5] or "").strip()
+        value = str(parts[6] or "")
+        if not name:
+            continue
+
+        cookie: Dict[str, Any] = {
+            "name": name,
+            "value": value,
+            "path": path,
+            "secure": secure,
+        }
+        if http_only:
+            cookie["httpOnly"] = True
+
+        normalized_domain = domain.lstrip(".").strip()
+        if normalized_domain:
+            cookie["domain"] = domain
+        else:
+            cookie["url"] = default_url
+
+        if expires_raw:
+            try:
+                cookie["expires"] = float(expires_raw)
+            except Exception:
+                pass
+        if name.startswith("__Secure-") or name.startswith("__Host-"):
+            cookie["secure"] = True
+        if name.startswith("__Host-"):
+            cookie.pop("domain", None)
+            cookie["path"] = "/"
+            if "url" not in cookie:
+                cookie["url"] = default_url
+        cookies.append(cookie)
+
+    if not saw_candidate:
+        return None
+    return cookies
+
+
 def normalize_cookie_header_text(raw_cookie: Optional[str]) -> str:
     value = str(raw_cookie or "").strip()
     if not value:
@@ -118,6 +184,9 @@ def parse_browser_cookie_payload(raw_cookie: Any, default_url: str = DEFAULT_COO
     normalized = normalize_cookie_storage_text(raw_cookie)
     if not normalized:
         return []
+    netscape_cookies = _parse_netscape_cookie_text(normalized, default_url)
+    if netscape_cookies is not None:
+        return netscape_cookies
     if normalized[:1] in {"[", "{"}:
         try:
             payload = json.loads(normalized)
@@ -274,6 +343,41 @@ def merge_browser_cookie_payloads(
     if not merged:
         return ""
     return json.dumps(list(merged.values()), ensure_ascii=False, separators=(",", ":"))
+
+
+def remove_session_token_cookies(
+    raw_cookie: Any,
+    default_url: str = DEFAULT_COOKIE_URL,
+) -> str:
+    filtered = [
+        cookie
+        for cookie in parse_browser_cookie_payload(raw_cookie, default_url=default_url)
+        if str(cookie.get("name") or "").strip() not in _SESSION_TOKEN_COOKIE_NAMES
+    ]
+    if not filtered:
+        return ""
+    return json.dumps(filtered, ensure_ascii=False, separators=(",", ":"))
+
+
+def merge_browser_cookie_payloads_prefer_live_session(
+    base_cookie: Any,
+    new_cookie_items: Any,
+    default_url: str = DEFAULT_COOKIE_URL,
+) -> str:
+    browser_session_token = extract_session_token_from_cookie_payload(
+        new_cookie_items,
+        default_url=default_url,
+    )
+    base_payload = (
+        remove_session_token_cookies(base_cookie, default_url=default_url)
+        if browser_session_token
+        else base_cookie
+    )
+    return merge_browser_cookie_payloads(
+        base_payload,
+        new_cookie_items,
+        default_url=default_url,
+    )
 
 
 def serialize_cookie_header(raw_cookie: Any, default_url: str = DEFAULT_COOKIE_URL) -> str:
