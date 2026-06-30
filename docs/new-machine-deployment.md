@@ -23,10 +23,10 @@
 - Python 3.11 或至少 Python 3.10+
 - Google Chrome
 
-当前仓库里“宿主机浏览器启动桥”原生提供了 macOS 的 `launchd` 方案，同时也已经补了 Windows 一键注册常驻脚本，见：
+当前仓库里“宿主机浏览器启动桥”原生提供了 macOS 的 `launchd` 方案；Windows 侧请直接使用启动脚本，见：
 
 - [browser-profile-host-bridge-service.md](file:///Users/baolei/workspace/gflow-proxy-server/docs/browser-profile-host-bridge-service.md)
-- [install_host_bridge_windows.ps1](file:///Users/baolei/workspace/gflow-proxy-server/scripts/install_host_bridge_windows.ps1)
+- [start_host_bridge_windows.cmd](file:///Users/baolei/workspace/gflow-proxy-server/scripts/start_host_bridge_windows.cmd)
 
 ## 2. 获取代码
 
@@ -149,34 +149,30 @@ chmod +x scripts/install_browser_profile_host_bridge_launchagent.sh
 
 Windows 不要运行 `install_browser_profile_host_bridge_launchagent.sh`，那个脚本依赖 `launchctl`，只适用于 macOS。
 
-当前仓库已经提供一键注册 Windows 常驻任务的脚本：
+当前仓库只保留一个 Windows 启动脚本：
 
-- [install_host_bridge_windows.ps1](file:///Users/baolei/workspace/gflow-proxy-server/scripts/install_host_bridge_windows.ps1)
+- [start_host_bridge_windows.cmd](file:///Users/baolei/workspace/gflow-proxy-server/scripts/start_host_bridge_windows.cmd)
 
-在 PowerShell 里进入仓库根目录后执行：
+在 `cmd` 或 PowerShell 里进入仓库根目录后执行：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install_host_bridge_windows.ps1
-```
-
-如果自动探测不到 Chrome，显式指定浏览器路径：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install_host_bridge_windows.ps1 -ChromePath "C:\Program Files\Google\Chrome\Application\chrome.exe"
+```cmd
+scripts\start_host_bridge_windows.cmd
 ```
 
 这个脚本会自动完成：
 
-- 探测本机 Chrome/Chromium
-- 生成 `scripts\start_host_bridge_windows.cmd`
-- 注册一个“登录后自动启动”的 Windows 任务计划
-- 立即启动 host bridge
+- 进入仓库根目录
+- 启动 host bridge
+- 把日志写到 `tmp\host-bridge\`
 
-如果后续要删除这个常驻任务，可执行：
+如果自动探测不到 Chrome，先在当前终端里显式指定浏览器路径，再启动：
 
-```powershell
-Unregister-ScheduledTask -TaskName "Flow2API Host Bridge" -Confirm:$false
+```cmd
+set FLOW2API_CHROME_PATH=C:\Users\%USERNAME%\AppData\Local\Google\Chrome for Testing\Application\chrome.exe
+scripts\start_host_bridge_windows.cmd
 ```
+
+这个方案会保留一个 `cmd` 窗口；那个窗口就是 host bridge 进程本身，关闭后服务也会停止。
 
 ### 5.3 验证
 
@@ -199,7 +195,7 @@ curl http://127.0.0.1:8765/health
 完整说明见：
 
 - [browser-profile-host-bridge-service.md](file:///Users/baolei/workspace/gflow-proxy-server/docs/browser-profile-host-bridge-service.md)
-- [install_host_bridge_windows.ps1](file:///Users/baolei/workspace/gflow-proxy-server/scripts/install_host_bridge_windows.ps1)
+- [start_host_bridge_windows.cmd](file:///Users/baolei/workspace/gflow-proxy-server/scripts/start_host_bridge_windows.cmd)
 
 如果你不需要自动拉起浏览器，只接受手工打开 Chrome，那么这一步不是必需的。
 
@@ -397,7 +393,7 @@ tail -f tmp/host-bridge/stderr.log
 - host bridge 是否已安装并在线
 - `docker-compose.headed.yml` 里的 `FLOW2API_BROWSER_LAUNCH_HOST_URL` 是否正确
 - 宿主机是否能正常拉起 Chrome
-- Windows 下如果提示“未找到可用的 Chrome/Chromium”，请重新执行 `install_host_bridge_windows.ps1 -ChromePath "<chrome.exe 路径>"`
+- Windows 下如果提示“未找到可用的 Chrome for Testing”，请先执行 `set FLOW2API_CHROME_PATH=<Chrome for Testing 的 chrome.exe 路径>`，再运行 `scripts\start_host_bridge_windows.cmd`
 
 ### 10.4 只是想先把服务起起来，不接浏览器自动化
 
@@ -439,8 +435,8 @@ curl http://127.0.0.1:8000/health
 
 Windows:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install_host_bridge_windows.ps1
+```cmd
+scripts\start_host_bridge_windows.cmd
 docker compose -f docker-compose.headed.yml up -d --build
 curl http://127.0.0.1:8765/health
 curl http://127.0.0.1:8000/health

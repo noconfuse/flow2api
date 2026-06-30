@@ -26,27 +26,44 @@ USER_DATA_ROOT = STATE_ROOT / "user_data"
 METADATA_ROOT = STATE_ROOT / "metadata"
 DEFAULT_LABS_URL = "https://labs.google/fx/zh/tools/flow"
 
-CHROME_CANDIDATES = [
-    str(
-        REPO_ROOT
-        / "browser_data"
-        / "host_browsers"
-        / "chrome-mac-arm64"
-        / "chrome-mac-arm64"
-        / "Google Chrome for Testing.app"
-        / "Contents"
-        / "MacOS"
-        / "Google Chrome for Testing"
-    ),
-    "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-]
+def chrome_candidates() -> list[str]:
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        program_files = os.environ.get("PROGRAMFILES", "")
+        program_files_x86 = os.environ.get("PROGRAMFILES(X86)", "")
+        return [
+            str(REPO_ROOT / "browser_data" / "host_browsers" / "chrome-win64" / "chrome-win64" / "chrome.exe"),
+            os.path.join(local_app_data, "Google", "Chrome for Testing", "Application", "chrome.exe"),
+            os.path.join(program_files, "Google", "Chrome for Testing", "Application", "chrome.exe"),
+            os.path.join(program_files_x86, "Google", "Chrome for Testing", "Application", "chrome.exe"),
+        ]
+
+    return [
+        str(
+            REPO_ROOT
+            / "browser_data"
+            / "host_browsers"
+            / "chrome-mac-arm64"
+            / "chrome-mac-arm64"
+            / "Google Chrome for Testing.app"
+            / "Contents"
+            / "MacOS"
+            / "Google Chrome for Testing"
+        ),
+        "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+    ]
+
+
+def is_chrome_for_testing_path(path: Path) -> bool:
+    resolved = path.expanduser().resolve(strict=False)
+    resolved_text = str(resolved).lower()
+    if "chrome for testing" in resolved_text:
+        return True
+    try:
+        resolved.relative_to(REPO_ROOT / "browser_data" / "host_browsers")
+        return True
+    except ValueError:
+        return False
 
 
 @dataclass
@@ -354,42 +371,34 @@ def stop_profile_processes(spec: TokenBrowserProfileSpec) -> list[int]:
 def detect_chrome_path(explicit_path: Optional[str] = None) -> str:
     if explicit_path:
         path = Path(explicit_path).expanduser()
-        if path.exists():
+        if path.exists() and is_chrome_for_testing_path(path):
             return str(path)
+        if path.exists():
+            raise RuntimeError(f"指定的浏览器不是 Chrome for Testing: {path}")
         raise RuntimeError(f"指定的浏览器路径不存在: {path}")
 
     env_path = os.environ.get("FLOW2API_CHROME_PATH", "").strip()
     if env_path:
         path = Path(env_path).expanduser()
-        if path.exists():
+        if path.exists() and is_chrome_for_testing_path(path):
             return str(path)
+        if path.exists():
+            raise RuntimeError(f"`FLOW2API_CHROME_PATH` 必须指向 Chrome for Testing: {path}")
 
     runtime_browser_path = os.environ.get("BROWSER_EXECUTABLE_PATH", "").strip()
     if runtime_browser_path:
         path = Path(runtime_browser_path).expanduser()
-        if path.exists():
+        if path.exists() and is_chrome_for_testing_path(path):
             return str(path)
+        if path.exists():
+            raise RuntimeError(f"`BROWSER_EXECUTABLE_PATH` 必须指向 Chrome for Testing: {path}")
 
-    for candidate in CHROME_CANDIDATES:
+    for candidate in chrome_candidates():
         if Path(candidate).exists():
             return candidate
 
-    try:
-        from playwright.sync_api import sync_playwright
-
-        with sync_playwright() as p:
-            playwright_path = str(getattr(p.chromium, "executable_path", "") or "").strip()
-        if playwright_path and Path(playwright_path).exists():
-            return playwright_path
-    except Exception:
-        pass
-
-    which_candidate = shutil.which("google-chrome") or shutil.which("chromium") or shutil.which("chrome")
-    if which_candidate:
-        return which_candidate
-
     raise RuntimeError(
-        "未找到可用的 Chrome/Chromium。请通过 `--chrome-path` 或环境变量 `FLOW2API_CHROME_PATH` 指定浏览器。"
+        "未找到可用的 Chrome for Testing。请安装 Chrome for Testing，或通过 `--chrome-path` / `FLOW2API_CHROME_PATH` 指向 Chrome for Testing。"
     )
 
 
