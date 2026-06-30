@@ -764,6 +764,31 @@
           return range;
         };
 
+        const waitForPromptEditorReadyAfterSettings = async (timeoutMs = 2600) => {
+          return await waitFor(() => {
+            const overlayRoots = collectSettingsOverlayRoots();
+            if (overlayRoots.length) return null;
+            const target = findPromptTarget();
+            if (!(target instanceof Element) || !visible(target)) return null;
+            clickNode(target, { nativeOnly: true });
+            target.focus();
+            placeCaretAtEnd(target);
+            const range = getEditableRangeWithinTarget(target);
+            if (!range) return null;
+            const selection = window.getSelection();
+            if (!selection) return null;
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return {
+              ok: true,
+              prompt_target: summarizeElement(target),
+              active_element: summarizeElement(document.activeElement),
+              submit_state: summarizeSubmitButtonState(),
+              overlay_count: overlayRoots.length,
+            };
+          }, timeoutMs, 120);
+        };
+
         const summarizeSubmitButtonState = () => {
           const button = findSubmitButton();
           if (!(button instanceof Element)) {
@@ -2561,6 +2586,11 @@
                 desiredSettingsResult.reason || "unknown"
               }; detail=${JSON.stringify(desiredSettingsResult)}`
             );
+          }
+          const promptReadyAfterSettings = await waitForPromptEditorReadyAfterSettings();
+          recordStep("prompt_ready_after_settings", promptReadyAfterSettings || { ok: false, reason: "prompt_not_ready_after_settings" });
+          if (!promptReadyAfterSettings?.ok) {
+            throw new Error("prompt_not_ready_after_settings");
           }
           await humanPause(260, 520);
 
