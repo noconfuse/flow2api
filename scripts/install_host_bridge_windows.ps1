@@ -2,7 +2,9 @@ param(
     [string]$TaskName = "Flow2API Host Bridge",
     [string]$BindHost = "0.0.0.0",
     [string]$Port = "8765",
-    [string]$ChromePath = ""
+    [string]$ChromePath = "",
+    [ValidateSet("auto", "task", "run")]
+    [string]$InstallMode = "auto"
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,26 +45,57 @@ $CmdLines = @(
 
 Set-Content -Path $StartCmd -Value ($CmdLines -join "`r`n") -Encoding ASCII
 
-$Action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$StartCmd`""
-$Trigger = New-ScheduledTaskTrigger -AtLogOn
-$Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
-$Settings = New-ScheduledTaskSettingsSet `
-    -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries `
-    -StartWhenAvailable `
-    -MultipleInstances IgnoreNew
+function Install-WithScheduledTask {
+    $Action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$StartCmd`""
+    $Trigger = New-ScheduledTaskTrigger -AtLogOn
+    $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
+    $Settings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable `
+        -MultipleInstances IgnoreNew
 
-Register-ScheduledTask `
-    -TaskName $TaskName `
-    -Action $Action `
-    -Trigger $Trigger `
-    -Principal $Principal `
-    -Settings $Settings `
-    -Force | Out-Null
+    Register-ScheduledTask `
+        -TaskName $TaskName `
+        -Action $Action `
+        -Trigger $Trigger `
+        -Principal $Principal `
+        -Settings $Settings `
+        -Force | Out-Null
 
-Start-ScheduledTask -TaskName $TaskName
+    Start-ScheduledTask -TaskName $TaskName
+    return "scheduled-task"
+}
 
-Write-Host "Task registered and started: $TaskName"
+function Install-WithRunKey {
+    $RunKeyPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    $RunCommand = "cmd.exe /c `"$StartCmd`""
+    New-Item -Path $RunKeyPath -Force | Out-Null
+    New-ItemProperty -Path $RunKeyPath -Name $TaskName -PropertyType String -Value $RunCommand -Force | Out-Null
+    Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$StartCmd`""
+    return "user-run-key"
+}
+
+$InstalledMode = $null
+
+if ($InstallMode -eq "task") {
+    $InstalledMode = Install-WithScheduledTask
+} elseif ($InstallMode -eq "run") {
+    $InstalledMode = Install-WithRunKey
+} else {
+    try {
+        $InstalledMode = Install-WithScheduledTask
+    } catch {
+        if ($_.Exception.Message -match "拒绝访问" -or $_.FullyQualifiedErrorId -match "0x80070005") {
+            Write-Host "Scheduled task registration was denied. Falling back to HKCU Run startup."
+            $InstalledMode = Install-WithRunKey
+        } else {
+            throw
+        }
+    }
+}
+
+Write-Host "Install mode: $InstalledMode"
 Write-Host "Chrome path: $ChromePath"
 Write-Host "Launcher script: $StartCmd"
 Write-Host "Health check: http://127.0.0.1:$Port/health"
