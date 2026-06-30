@@ -106,7 +106,7 @@ def current_extension_source_fingerprint() -> str:
 
 
 def default_launch_args() -> list[str]:
-    args: list[str] = []
+    args: list[str] = ["--hide-crash-restore-bubble"]
     if sys.platform == "darwin":
         # Chrome 149 on this macOS host crashes during sandbox/GPU init unless sandbox is disabled.
         args.append("--no-sandbox")
@@ -256,6 +256,27 @@ def clear_profile_session_restore_files(user_data_dir: Path) -> list[str]:
         except Exception:
             continue
     return removed
+
+
+def mark_profile_clean_exit(user_data_dir: Path) -> bool:
+    preferences_path = user_data_dir / "Default" / "Preferences"
+    if not preferences_path.exists():
+        return False
+    try:
+        data = json.loads(preferences_path.read_text(encoding="utf-8"))
+        profile = data.get("profile")
+        if not isinstance(profile, dict):
+            profile = {}
+            data["profile"] = profile
+        profile["exit_type"] = "Normal"
+        profile["exited_cleanly"] = True
+        preferences_path.write_text(
+            json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        return True
+    except Exception:
+        return False
 
 
 # #region debug-point B:debug-report-helper
@@ -567,6 +588,7 @@ def launch_profile_with_paths(
         raise RuntimeError(f"扩展目录不存在: {extension_dir}")
     stopped_pids = stop_profile_processes_for_user_data_dir(user_data_dir)
     cleared_session_files = clear_profile_session_restore_files(user_data_dir)
+    marked_clean_exit = mark_profile_clean_exit(user_data_dir)
     cleared_extension_state = clear_profile_extension_state(user_data_dir)
     # #region debug-point B:profile-stop-existing
     report_token5_video_media_debug(
@@ -578,6 +600,7 @@ def launch_profile_with_paths(
             "user_data_dir": str(user_data_dir),
             "stopped_pids": stopped_pids,
             "cleared_session_files": cleared_session_files,
+            "marked_clean_exit": marked_clean_exit,
             "cleared_extension_state": cleared_extension_state,
         },
     )
@@ -627,6 +650,7 @@ def launch_profile_with_paths(
         "command": command,
         "stopped_pids": stopped_pids,
         "cleared_session_files": cleared_session_files,
+        "marked_clean_exit": marked_clean_exit,
         "cleared_extension_state": cleared_extension_state,
     }
 

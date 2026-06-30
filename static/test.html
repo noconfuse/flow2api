@@ -1489,7 +1489,8 @@ function getDerivedOperationChoices(mediaType) {
   return [];
 }
 
-function syncDerivedActionButton() {
+function syncDerivedActionButton(options = {}) {
+  const { syncPreview = true, restartPreview = true } = options;
   const btn = document.getElementById("btnDerivedGenerate");
   const modelName = document.getElementById("derivedSelectedModelName");
   const modelInfo = document.getElementById("derivedSelectedModelInfo");
@@ -1502,7 +1503,9 @@ function syncDerivedActionButton() {
     modelInfo.textContent = "先选模型，再拖动时间轴调整片段。";
     editRangeGroup.style.display = "none";
     if (previewEls.shell) previewEls.shell.classList.remove("active");
-    mountDerivedClipPreview();
+    if (syncPreview) {
+      mountDerivedClipPreview();
+    }
     btn.disabled = true;
     btn.textContent = "选择模型后开始生成";
     return;
@@ -1512,12 +1515,14 @@ function syncDerivedActionButton() {
     ? "拖动时间轴后直接预览当前片段。"
     : (ALL_MODELS[STATE.derivedModal.selectedModel] || "");
   editRangeGroup.style.display = meta.requiresFrameRange ? "block" : "none";
-  mountDerivedClipPreview();
-  if (meta.requiresFrameRange) {
-    syncDerivedEditRangeUI();
-    ensureDerivedSegmentPreviewPlayback(true);
-  } else {
-    stopDerivedSegmentPreview({ pauseVideo: true, resetTime: false });
+  if (syncPreview) {
+    mountDerivedClipPreview();
+    if (meta.requiresFrameRange) {
+      syncDerivedEditRangeUI();
+      ensureDerivedSegmentPreviewPlayback(restartPreview);
+    } else {
+      stopDerivedSegmentPreview({ pauseVideo: true, resetTime: false });
+    }
   }
   const promptReady = promptValue.length > 0;
   btn.disabled = !!STATE.derivedModal.generating || !promptReady;
@@ -2580,7 +2585,9 @@ document.getElementById("tabHistory").onclick = async () => {
   }
 };
 document.getElementById("btnCloseDerivedModal").onclick = closeDerivedModal;
-document.getElementById("derivedPromptInput").addEventListener("input", syncDerivedActionButton);
+document.getElementById("derivedPromptInput").addEventListener("input", () => {
+  syncDerivedActionButton({ syncPreview: false, restartPreview: false });
+});
 document.getElementById("derivedModal").onclick = (e) => {
   if (e.target.id === "derivedModal") closeDerivedModal();
 };
