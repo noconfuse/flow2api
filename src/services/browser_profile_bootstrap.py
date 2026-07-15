@@ -33,8 +33,11 @@ def chrome_candidates() -> list[str]:
         program_files_x86 = os.environ.get("PROGRAMFILES(X86)", "")
         return [
             str(REPO_ROOT / "browser_data" / "host_browsers" / "chrome-win64" / "chrome-win64" / "chrome.exe"),
+            os.path.join(local_app_data, "Google", "Chrome for Testing", "chrome.exe"),
             os.path.join(local_app_data, "Google", "Chrome for Testing", "Application", "chrome.exe"),
+            os.path.join(program_files, "Google", "Chrome for Testing", "chrome.exe"),
             os.path.join(program_files, "Google", "Chrome for Testing", "Application", "chrome.exe"),
+            os.path.join(program_files_x86, "Google", "Chrome for Testing", "chrome.exe"),
             os.path.join(program_files_x86, "Google", "Chrome for Testing", "Application", "chrome.exe"),
         ]
 

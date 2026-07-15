@@ -33,14 +33,12 @@ def chrome_candidates() -> list[str]:
         program_files_x86 = os.environ.get("PROGRAMFILES(X86)", "")
         return [
             str(REPO_ROOT / "browser_data" / "host_browsers" / "chrome-win64" / "chrome-win64" / "chrome.exe"),
+            os.path.join(local_app_data, "Google", "Chrome for Testing", "chrome.exe"),
             os.path.join(local_app_data, "Google", "Chrome for Testing", "Application", "chrome.exe"),
+            os.path.join(program_files, "Google", "Chrome for Testing", "chrome.exe"),
             os.path.join(program_files, "Google", "Chrome for Testing", "Application", "chrome.exe"),
+            os.path.join(program_files_x86, "Google", "Chrome for Testing", "chrome.exe"),
             os.path.join(program_files_x86, "Google", "Chrome for Testing", "Application", "chrome.exe"),
-            os.path.join(program_files, "Google", "Chrome", "Application", "chrome.exe"),
-            os.path.join(program_files_x86, "Google", "Chrome", "Application", "chrome.exe"),
-            os.path.join(local_app_data, "Google", "Chrome", "Application", "chrome.exe"),
-            os.path.join(program_files, "Chromium", "Application", "chrome.exe"),
-            os.path.join(program_files_x86, "Chromium", "Application", "chrome.exe"),
         ]
 
     return [
@@ -56,13 +54,6 @@ def chrome_candidates() -> list[str]:
             / "Google Chrome for Testing"
         ),
         "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
     ]
 
 
