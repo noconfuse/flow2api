@@ -146,6 +146,51 @@ class LoadBalancerCreditAwareTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(selected)
 
+    async def test_select_token_skips_locally_excluded_tokens(self):
+        primary = Token(
+            id=1,
+            st="st-1",
+            at="at-1",
+            email="primary@example.com",
+            name="primary",
+            credits=300,
+        )
+        excluded = Token(
+            id=2,
+            st="st-2",
+            at="at-2",
+            email="excluded@example.com",
+            name="excluded",
+            credits=500,
+        )
+        balancer = LoadBalancer(_FakeTokenManager([primary, excluded]))
+
+        selected = await balancer.select_token(
+            for_video_generation=True,
+            excluded_token_ids=[excluded.id],
+        )
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.id, primary.id)
+
+    async def test_unavailable_reason_mentions_all_tokens_excluded_for_retry(self):
+        token = Token(
+            id=1,
+            st="st-1",
+            at="at-1",
+            email="only@example.com",
+            name="only",
+            credits=500,
+        )
+        balancer = LoadBalancer(_FakeTokenManager([token]))
+
+        reason = await balancer.get_unavailable_reason(
+            for_video_generation=True,
+            excluded_token_ids=[token.id],
+        )
+
+        self.assertIn("已排除全部已失败账号", reason)
+
     async def test_select_token_prefers_healthy_over_cooldown_for_video_extension(self):
         config.set_captcha_method("extension")
         cooling = Token(

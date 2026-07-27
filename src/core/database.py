@@ -10,6 +10,8 @@ from .config import DEFAULT_YESCAPTCHA_TASK_TYPE, normalize_yescaptcha_task_type
 from .logger import debug_logger
 from .models import (
     AdminConfig,
+    BatchJob,
+    BatchJobItem,
     BrowserProfile,
     CacheConfig,
     CallLogicConfig,
@@ -87,6 +89,31 @@ class Database:
 
     def _token_from_row(self, row: Any) -> Token:
         return Token(**self._normalize_token_row(dict(row)))
+
+    def _loads_json_field(self, value: Any) -> Any:
+        if value is None or value == "":
+            return None
+        if isinstance(value, (dict, list)):
+            return value
+        try:
+            return json.loads(value)
+        except Exception:
+            return None
+
+    def _dumps_json_field(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, ensure_ascii=False)
+
+    def _batch_job_from_row(self, row: Any) -> BatchJob:
+        return BatchJob(**dict(row))
+
+    def _batch_job_item_from_row(self, row: Any) -> BatchJobItem:
+        item_dict = dict(row)
+        item_dict["normalized_payload"] = self._loads_json_field(item_dict.get("normalized_payload"))
+        return BatchJobItem(**item_dict)
 
     @asynccontextmanager
     async def _connect(self, *, write: bool = False):
@@ -177,7 +204,7 @@ class Database:
                 image_enabled BOOLEAN DEFAULT 1,
                 video_enabled BOOLEAN DEFAULT 1,
                 image_concurrency INTEGER DEFAULT -1,
-                video_concurrency INTEGER DEFAULT -1,
+                video_concurrency INTEGER DEFAULT 1,
                 captcha_proxy_url TEXT,
                 extension_route_key TEXT,
                 ban_reason TEXT,
@@ -1033,7 +1060,7 @@ class Database:
                     ("image_enabled", "BOOLEAN DEFAULT 1"),
                     ("video_enabled", "BOOLEAN DEFAULT 1"),
                     ("image_concurrency", "INTEGER DEFAULT -1"),
-                    ("video_concurrency", "INTEGER DEFAULT -1"),
+                    ("video_concurrency", "INTEGER DEFAULT 1"),
                     ("captcha_proxy_url", "TEXT"),  # token级打码代理
                     ("extension_route_key", "TEXT"),  # extension 模式路由键
                     ("ban_reason", "TEXT"),  # 禁用原因
@@ -1206,7 +1233,7 @@ class Database:
                     image_enabled BOOLEAN DEFAULT 1,
                     video_enabled BOOLEAN DEFAULT 1,
                     image_concurrency INTEGER DEFAULT -1,
-                    video_concurrency INTEGER DEFAULT -1,
+                    video_concurrency INTEGER DEFAULT 1,
                     captcha_proxy_url TEXT,
                     extension_route_key TEXT,
                     ban_reason TEXT,
@@ -1269,6 +1296,50 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     completed_at TIMESTAMP,
                     FOREIGN KEY (token_id) REFERENCES tokens(id)
+                )
+            """)
+
+            # Batch jobs tables
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS batch_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT UNIQUE NOT NULL,
+                    source_type TEXT NOT NULL DEFAULT 'csv',
+                    file_name TEXT,
+                    raw_payload_text TEXT,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    total_count INTEGER DEFAULT 0,
+                    pending_count INTEGER DEFAULT 0,
+                    running_count INTEGER DEFAULT 0,
+                    success_count INTEGER DEFAULT 0,
+                    failed_count INTEGER DEFAULT 0,
+                    created_by TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    started_at TIMESTAMP,
+                    finished_at TIMESTAMP
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS batch_job_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    row_index INTEGER NOT NULL,
+                    row_id TEXT,
+                    task_type TEXT NOT NULL,
+                    normalized_payload TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    error_code TEXT,
+                    error_message TEXT,
+                    result_media_id TEXT,
+                    result_url TEXT,
+                    token_id INTEGER,
+                    project_id TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    started_at TIMESTAMP,
+                    finished_at TIMESTAMP,
+                    FOREIGN KEY (job_id) REFERENCES batch_jobs(job_id) ON DELETE CASCADE,
+                    FOREIGN KEY (token_id) REFERENCES tokens(id),
+                    FOREIGN KEY (project_id) REFERENCES projects(project_id)
                 )
             """)
 
@@ -1494,6 +1565,10 @@ class Database:
 
             # Create indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_id ON tasks(task_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_batch_jobs_job_id ON batch_jobs(job_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_batch_jobs_status_created_at ON batch_jobs(status, created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_batch_job_items_job_id ON batch_job_items(job_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_batch_job_items_job_status_row ON batch_job_items(job_id, status, row_index)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_token_st ON tokens(st)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_project_id ON projects(project_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tokens_email ON tokens(email)")
@@ -2451,6 +2526,181 @@ class Database:
                 query = f"UPDATE tasks SET {', '.join(updates)} WHERE task_id = ?"
                 await db.execute(query, params)
                 await db.commit()
+
+    async def create_batch_job(self, job: BatchJob, items: List[BatchJobItem]) -> int:
+        """Create a batch job and all its items."""
+        async with self._connect(write=True) as db:
+            cursor = await db.execute("""
+                INSERT INTO batch_jobs (
+                    job_id, source_type, file_name, raw_payload_text, status,
+                    total_count, pending_count, running_count, success_count, failed_count,
+                    created_by, started_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                job.job_id,
+                job.source_type,
+                job.file_name,
+                job.raw_payload_text,
+                job.status,
+                job.total_count,
+                job.pending_count,
+                job.running_count,
+                job.success_count,
+                job.failed_count,
+                job.created_by,
+                job.started_at,
+                job.finished_at,
+            ))
+
+            for item in items:
+                await db.execute("""
+                    INSERT INTO batch_job_items (
+                        job_id, row_index, row_id, task_type, normalized_payload, status,
+                        error_code, error_message, result_media_id, result_url,
+                        token_id, project_id, started_at, finished_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    item.job_id,
+                    item.row_index,
+                    item.row_id,
+                    item.task_type,
+                    self._dumps_json_field(item.normalized_payload),
+                    item.status,
+                    item.error_code,
+                    item.error_message,
+                    item.result_media_id,
+                    item.result_url,
+                    item.token_id,
+                    item.project_id,
+                    item.started_at,
+                    item.finished_at,
+                ))
+
+            await db.commit()
+            return cursor.lastrowid
+
+    async def list_batch_jobs(self, limit: int = 50) -> List[BatchJob]:
+        """List recent batch jobs."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute("""
+                SELECT * FROM batch_jobs
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+            """, (max(1, int(limit)),))).fetchall()
+            return [self._batch_job_from_row(row) for row in rows]
+
+    async def get_batch_job(self, job_id: str) -> Optional[BatchJob]:
+        """Get a batch job by business ID."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            row = await (
+                await db.execute("SELECT * FROM batch_jobs WHERE job_id = ?", (job_id,))
+            ).fetchone()
+            return self._batch_job_from_row(row) if row else None
+
+    async def delete_batch_job(self, job_id: str) -> int:
+        async with self._connect(write=True) as db:
+            cursor = await db.execute("DELETE FROM batch_jobs WHERE job_id = ?", (job_id,))
+            await db.commit()
+            return int(getattr(cursor, "rowcount", 0) or 0)
+
+    async def list_batch_job_items(self, job_id: str) -> List[BatchJobItem]:
+        """List batch items for a job."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute("""
+                SELECT * FROM batch_job_items
+                WHERE job_id = ?
+                ORDER BY row_index ASC, id ASC
+            """, (job_id,))).fetchall()
+            return [self._batch_job_item_from_row(row) for row in rows]
+
+    async def update_batch_job(self, job_id: str, **kwargs) -> None:
+        """Update batch job fields."""
+        async with self._connect(write=True) as db:
+            updates = []
+            params = []
+            for key, value in kwargs.items():
+                if value is not None:
+                    updates.append(f"{key} = ?")
+                    params.append(value)
+
+            if not updates:
+                return
+
+            params.append(job_id)
+            await db.execute(
+                f"UPDATE batch_jobs SET {', '.join(updates)} WHERE job_id = ?",
+                params,
+            )
+            await db.commit()
+
+    async def update_batch_job_item(self, item_id: int, **kwargs) -> None:
+        """Update batch item fields."""
+        async with self._connect(write=True) as db:
+            updates = []
+            params = []
+            for key, value in kwargs.items():
+                if value is None:
+                    continue
+                if key == "normalized_payload":
+                    value = self._dumps_json_field(value)
+                updates.append(f"{key} = ?")
+                params.append(value)
+
+            if not updates:
+                return
+
+            params.append(item_id)
+            await db.execute(
+                f"UPDATE batch_job_items SET {', '.join(updates)} WHERE id = ?",
+                params,
+            )
+            await db.commit()
+
+    async def refresh_batch_job_counts(self, job_id: str) -> Dict[str, int]:
+        """Recalculate persisted status counters for a batch job from its items."""
+        async with self._connect(write=True) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute("""
+                SELECT status, COUNT(*) AS count
+                FROM batch_job_items
+                WHERE job_id = ?
+                GROUP BY status
+            """, (job_id,))).fetchall()
+            counts = {str(row["status"] or ""): int(row["count"] or 0) for row in rows}
+            pending_count = counts.get("pending", 0) + counts.get("queued", 0)
+            running_count = counts.get("running", 0)
+            success_count = counts.get("succeeded", 0)
+            failed_count = counts.get("failed", 0) + counts.get("cancelled", 0)
+            total_count = pending_count + running_count + success_count + failed_count
+
+            await db.execute("""
+                UPDATE batch_jobs
+                SET total_count = ?,
+                    pending_count = ?,
+                    running_count = ?,
+                    success_count = ?,
+                    failed_count = ?
+                WHERE job_id = ?
+            """, (
+                total_count,
+                pending_count,
+                running_count,
+                success_count,
+                failed_count,
+                job_id,
+            ))
+            await db.commit()
+
+            return {
+                "total_count": total_count,
+                "pending_count": pending_count,
+                "running_count": running_count,
+                "success_count": success_count,
+                "failed_count": failed_count,
+            }
 
     # Token stats operations (kept for compatibility, now delegates to specific methods)
     async def increment_token_stats(self, token_id: int, stat_type: str):

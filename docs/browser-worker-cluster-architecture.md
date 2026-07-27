@@ -1,50 +1,107 @@
-# 浏览器 Worker 集群最小架构
+# 浏览器 Worker 集群现状与演进
 
 ## 目标
 
-为 `100+ Google Flow 账号` 的号池项目设计一套可落地的真实浏览器执行架构，
-重点解决：
+这份文档不再把浏览器 worker 体系当成“纯规划稿”。
+
+当前项目里，浏览器 profile 资产、worker 节点/槽位/任务表，以及对应后台只读接口都已经落地；真正还在继续演进的，是“如何从当前 host bridge + extension 路径，进一步收敛到更完整的浏览器 worker 集群”。
+
+这份文档重点回答两件事：
+
+1. 当前已经落地了什么
+2. 后续还应该往哪演进
+
+重点问题仍然是：
 
 - 视频等高风控链路需要走真实浏览器 / 真实项目页 / 真实 UI 上下文
 - 不能要求 `100 个账号 = 100 个永远在线浏览器`
 - 后端仍然保留账号池、调度、限流、可观测能力
 
-这份设计关注的是 **最小可运行版本**，不是一步到位的最终平台。
+当前设计关注的是 **现状对齐后的最小可运行版本**，不是一步到位的最终平台。
 
 ## 核心判断
 
-当前项目已经具备两类能力：
+当前项目已经具备三类能力：
 
 - 后端侧：
   - token 池
   - 调度器
   - `token -> extension_route_key` 绑定
   - route 在线状态与账号邮箱校验
+  - `browser_profiles / worker_nodes / worker_slots / worker_jobs` 表
+  - 后台 browser worker 只读接口
 - 插件侧：
   - WebSocket 常连
   - 当前项目页/邮箱/页面状态上报
   - 浏览器内 `get_token`
   - 浏览器内 `submit_json`
+  - `video_ui_workflow`
+- 宿主机侧：
+  - `host_bridge` 自动拉起浏览器
+  - per-token 扩展副本与启动参数注入
+  - Chrome for Testing 强约束
 
-这套能力足以支撑 **请求级浏览器执行**，图片链路已经验证成功。
+也就是说，这套系统已经不只是“单个浏览器扩展连上后台”。
 
-但对于视频链路，仅做到：
+它已经有了浏览器资产、在线槽位视图、任务记录，以及视频 UI 工作流。
 
-- 真浏览器
-- 真登录态
-- 真项目页
-- 同页 token 获取
-- 同页 submit
+## 当前已落地能力
 
-仍然不等于“完整官方前端成功路径”。
+### 1. 浏览器资产表已经存在
 
-因此，后续高风控视频链路应升级到：
+以下表已经在数据库初始化阶段创建，而不是停留在设计里：
 
-- `浏览器 worker 集群`
-- `profile 资产化`
-- `真实 UI 提交`
+- `browser_profiles`
+- `worker_nodes`
+- `worker_slots`
+- `worker_jobs`
 
-而不是继续假设“一个插件统一控制 100 个账号”。
+见 [database.py](file:///Users/baolei/workspace/gflow-proxy-server/src/core/database.py#L1417-L1493)。
+
+### 2. 后台只读接口已经存在
+
+当前后台已经可以读取：
+
+- `GET /api/browser-worker/profiles`
+- `GET /api/browser-worker/nodes`
+- `GET /api/browser-worker/slots`
+- `GET /api/browser-worker/jobs`
+
+见 [admin.py](file:///Users/baolei/workspace/gflow-proxy-server/src/api/admin.py#L2861-L2897)。
+
+### 3. profile 视图会从 token 自动同步
+
+`browser_profiles` 不是完全手工维护。
+
+当前已有：
+
+- `sync_browser_profiles_from_tokens()`
+- `sync_extension_routes_to_worker_slots()`
+
+见 [database.py](file:///Users/baolei/workspace/gflow-proxy-server/src/core/database.py#L1753-L2132)。
+
+这意味着当前的 profile/slot 视图，已经开始从现有 token 和扩展在线状态自动派生。
+
+### 4. 视频主链路已经切到 `video_ui_workflow`
+
+当前文生视频与视频编辑主链路已经直接派发 `video_ui_workflow`，而不是停留在旧的 `probe/type/click` 三段式。
+
+见 [flow_client.py](file:///Users/baolei/workspace/gflow-proxy-server/src/services/flow_client.py#L3301-L3486) 与 [background.js](file:///Users/baolei/workspace/gflow-proxy-server/extension/background.js#L8602-L8670)。
+
+### 5. 当前仍是 host bridge 驱动的浏览器准备模型
+
+虽然 worker 相关结构已存在，但浏览器准备主路径仍然是：
+
+- 容器命中 token
+- 后端通过 `host_bridge` 请求宿主机拉起浏览器
+- 启动器生成 per-token 扩展副本
+- 扩展上线后再同步 route/slot 视图
+
+这意味着当前实现更像：
+
+- `host bridge + token browser + worker views`
+
+而不是“完全独立、可跨多节点调度的成熟 worker 集群”。
 
 ## 设计原则
 
@@ -101,7 +158,7 @@
 
 这样资源压力才可控。
 
-## 最小实体模型
+## 实体模型
 
 ### 1. `tokens`
 
@@ -120,7 +177,7 @@
 
 ### 2. `browser_profiles`
 
-新增“浏览器身份资产”表：
+当前已落地的“浏览器身份资产”表字段包括：
 
 - `profile_id`
 - `token_id`
@@ -143,7 +200,7 @@
 
 ### 3. `worker_nodes`
 
-表示一台实际执行机器：
+当前已落地字段包括：
 
 - `worker_node_id`
 - `machine_label`
@@ -155,7 +212,9 @@
 
 ### 4. `worker_slots`
 
-表示某台机器上的一个在线浏览器实例：
+表示某台机器上的一个在线浏览器实例。
+
+当前已落地字段包括：
 
 - `slot_id`
 - `worker_node_id`
@@ -173,7 +232,9 @@
 
 ### 5. `worker_jobs`
 
-表示真实浏览器执行任务：
+表示真实浏览器执行任务。
+
+当前已落地字段包括：
 
 - `job_id`
 - `token_id`
@@ -181,7 +242,7 @@
 - `slot_id`
 - `job_type`
   - `image_request_submit`
-  - `video_ui_submit`
+  - `video_ui_workflow`
   - `refresh_session`
   - `warm_project_page`
 - `status`
@@ -196,6 +257,8 @@
 - `created_at`
 - `started_at`
 - `finished_at`
+
+以上字段定义见 [database.py](file:///Users/baolei/workspace/gflow-proxy-server/src/core/database.py#L1417-L1493)。
 
 ## 在线资源模型
 
@@ -292,15 +355,15 @@
 
 当前已经具备：
 
-- route 可视化
-- token 与 route 的绑定查看
+- profile 列表接口
+- worker node 列表接口
+- slot 列表接口
+- job 列表接口
 
-可以继续扩展为：
+现阶段更需要做的是：
 
-- profile 列表
-- worker node 列表
-- slot 状态页
-- job 队列页
+- 把这些只读接口进一步接入后台页面
+- 把“设计存在”升级成“运维可见”
 
 ### 需要新增的最小能力
 
@@ -310,16 +373,17 @@
 
 - `get_token`
 - `submit_json`
+- `video_ui_workflow`
 
-最小新增：
+后续仍可继续补：
 
 - `ensure_project_page`
-- `ui_submit_video`
-- `capture_ui_state`
+- 更细粒度的 UI state capture
+- 更独立的 worker job 指令语义
 
 #### 后端调度抽象
 
-新增一层 `browser_worker_scheduler`：
+后续建议新增一层更明确的 `browser_worker_scheduler`：
 
 - 输入：
   - token_id
@@ -374,17 +438,24 @@
 
 一个插件连接只说明“有浏览器在线”，不说明“这就是可安全复用的账号身份单元”。
 
+## 当前缺口
+
+虽然浏览器 worker 相关模型已经落地，但当前还存在几个明显缺口：
+
+- 浏览器准备仍偏向单机宿主桥，而不是独立 worker node 生命周期管理
+- `worker_nodes / worker_slots / worker_jobs` 目前更偏“同步视图 + 记录表”，而不是完整调度内核
+- 后台虽有接口，但还没有形成完整的 browser worker 运维页面
+- 视频任务前仍可能依赖 `force_relaunch`，浏览器复用策略还不够成熟
+
 ## 分阶段实施建议
 
-### Phase A：资产模型落地
+### Phase A：把已落地资产模型真正用起来
 
-新增：
+当前重点不是“再建表”，而是：
 
-- `browser_profiles`
-- `worker_nodes`
-- `worker_slots`
-
-并在后台可视化。
+- 持续同步 `browser_profiles`
+- 让 `worker_nodes / worker_slots` 成为稳定运维视图
+- 在后台补齐 profile/slot/job 页面
 
 ### Phase B：调度层升级
 
@@ -396,13 +467,13 @@
 
 - `token -> profile_id -> slot`
 
-### Phase C：插件新增页面级指令
+### Phase C：插件与 worker job 进一步解耦
 
 支持：
 
-- `ensure_project_page`
-- `ui_submit_video`
-- `capture_ui_state`
+- 更明确的 worker job 指令
+- 更独立的页面准备与状态捕获
+- 更稳定的浏览器复用与恢复策略
 
 ### Phase D：仅视频切 UI
 
@@ -433,10 +504,10 @@
 
 最小顺序应是：
 
-1. 先把 `profile` 提升为一等对象
-2. 让 `load_balancer` 不再只看 `extension_route_key`
-3. 给插件增加 `ui_submit_video`
-4. 只在视频链路启用真实 UI 提交
-5. 图片保留当前已成功的轻量模式
+1. 继续把 `profile` 从“同步出来的视图”提升为更稳定的一等对象
+2. 让调度层不再只看 `extension_route_key`
+3. 把 worker 只读接口接到更完整的后台运维页面
+4. 继续把视频链路收敛到真实 UI 工作流
+5. 图片链路保留当前已成功的轻量模式
 
 这样不会推翻已有成果，也不会让资源消耗立刻失控。

@@ -1,7 +1,7 @@
 """Data models for Flow2API"""
 
 from pydantic import BaseModel, ConfigDict
-from typing import Optional, List, Union, Any, Literal
+from typing import Optional, List, Union, Any, Literal, Dict
 from datetime import datetime
 
 
@@ -39,7 +39,7 @@ class Token(BaseModel):
 
     # 并发限制
     image_concurrency: int = -1  # -1表示无限制
-    video_concurrency: int = -1  # -1表示无限制
+    video_concurrency: int = 1  # 默认视频串行；-1表示无限制
 
     # 打码代理（token 级，可覆盖全局浏览器打码代理）
     captcha_proxy_url: Optional[str] = None
@@ -103,6 +103,47 @@ class Task(BaseModel):
     scene_id: Optional[str] = None  # Flow API的sceneId
     created_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+
+
+class BatchJob(BaseModel):
+    """CSV batch job"""
+
+    id: Optional[int] = None
+    job_id: str
+    source_type: str = "csv"
+    file_name: Optional[str] = None
+    raw_payload_text: Optional[str] = None
+    status: str = "draft"
+    total_count: int = 0
+    pending_count: int = 0
+    running_count: int = 0
+    success_count: int = 0
+    failed_count: int = 0
+    created_by: Optional[str] = None
+    created_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+
+class BatchJobItem(BaseModel):
+    """Single row within a CSV batch job"""
+
+    id: Optional[int] = None
+    job_id: str
+    row_index: int
+    row_id: Optional[str] = None
+    task_type: str
+    normalized_payload: Optional[Dict[str, Any]] = None
+    status: str = "pending"
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+    result_media_id: Optional[str] = None
+    result_url: Optional[str] = None
+    token_id: Optional[int] = None
+    project_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
 
 
 class RequestLog(BaseModel):
@@ -372,7 +413,7 @@ class GeminiGenerateContentRequest(BaseModel):
     preferred_token_id: Optional[int] = None
     preferred_project_id: Optional[str] = None
     source_image_media_ids: Optional[List[str]] = None
-    source_image_selected_material_index: Optional[int] = None
+    reference_assets: Optional[List[Dict[str, Any]]] = None
 
     model_config = ConfigDict(extra="allow")
 
@@ -394,6 +435,6 @@ class ChatCompletionRequest(BaseModel):
     preferred_token_id: Optional[int] = None
     preferred_project_id: Optional[str] = None
     source_image_media_ids: Optional[List[str]] = None
-    source_image_selected_material_index: Optional[int] = None
+    reference_assets: Optional[List[Dict[str, Any]]] = None
 
     model_config = ConfigDict(extra="allow")  # Allow extra fields like extra_body passthrough

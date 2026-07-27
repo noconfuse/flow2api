@@ -1,0 +1,1170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>批量视频任务</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07111f;
+      --panel: rgba(15, 23, 42, 0.9);
+      --panel-soft: rgba(30, 41, 59, 0.62);
+      --line: rgba(148, 163, 184, 0.18);
+      --text: #e2e8f0;
+      --muted: #8da2c0;
+      --primary: #38bdf8;
+      --primary-strong: #0ea5e9;
+      --danger: #ef4444;
+      --shadow: 0 22px 80px rgba(2, 6, 23, 0.42);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top, rgba(14, 165, 233, 0.12), transparent 34%),
+        linear-gradient(180deg, #020617 0%, #091427 100%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    .page {
+      width: min(1200px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 24px 0 40px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .hero h1 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.1;
+    }
+
+    .hero p,
+    .subtle,
+    .hint {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .hero p {
+      margin-top: 6px;
+    }
+
+    .nav,
+    .toolbar,
+    .actions,
+    .file-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .stack {
+      display: grid;
+      gap: 14px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .section-head h2,
+    .section-head h3 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .file-row {
+      gap: 12px;
+      align-items: stretch;
+    }
+
+    .file-picker {
+      flex: 1 1 260px;
+      min-width: 220px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: var(--panel-soft);
+      color: var(--text);
+    }
+
+    .file-picker::file-selector-button,
+    .btn {
+      border: 0;
+      border-radius: 12px;
+      padding: 10px 14px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: 0.18s ease;
+    }
+
+    .file-picker::file-selector-button {
+      margin-right: 10px;
+      background: rgba(148, 163, 184, 0.14);
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+
+    .btn {
+      background: linear-gradient(135deg, var(--primary), var(--primary-strong));
+      color: #082f49;
+    }
+
+    .btn.inline {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .btn.icon-only {
+      width: 40px;
+      height: 40px;
+      padding: 0;
+      gap: 0;
+    }
+
+    .btn-icon {
+      width: 16px;
+      height: 16px;
+      flex: 0 0 16px;
+      object-fit: contain;
+    }
+
+    .btn.secondary {
+      background: rgba(148, 163, 184, 0.12);
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+
+    .btn.danger {
+      background: rgba(239, 68, 68, 0.14);
+      color: #fecaca;
+      border: 1px solid rgba(239, 68, 68, 0.28);
+    }
+
+    .btn.ghost {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--line);
+    }
+
+    .btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .status-line {
+      margin-top: 12px;
+      min-height: 18px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: 1.2fr repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .stat {
+      background: var(--panel-soft);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+      min-width: 0;
+    }
+
+    .stat .label {
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 6px;
+    }
+
+    .stat .value {
+      font-size: 22px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .stat .value.filename {
+      font-size: 13px;
+      font-weight: 600;
+      color: #d8e3f3;
+      word-break: break-all;
+    }
+
+    .table-wrap {
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 680px;
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      font-size: 13px;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      color: var(--muted);
+      background: rgba(15, 23, 42, 0.98);
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .jobs-table tbody tr {
+      cursor: pointer;
+      transition: background 0.18s ease;
+    }
+
+    .jobs-table tbody tr:hover,
+    .jobs-table tbody tr.active {
+      background: rgba(56, 189, 248, 0.08);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      background: rgba(148, 163, 184, 0.14);
+      color: var(--text);
+      white-space: nowrap;
+    }
+
+    .badge.running,
+    .badge.queued {
+      background: rgba(14, 165, 233, 0.16);
+      color: #7dd3fc;
+    }
+
+    .badge.completed,
+    .badge.succeeded {
+      background: rgba(34, 197, 94, 0.16);
+      color: #86efac;
+    }
+
+    .badge.partially_failed,
+    .badge.failed {
+      background: rgba(239, 68, 68, 0.16);
+      color: #fca5a5;
+    }
+
+    .code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      color: #cbd5e1;
+      word-break: break-all;
+    }
+
+    .empty {
+      border: 1px dashed var(--line);
+      border-radius: 14px;
+      padding: 20px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    .messages {
+      display: grid;
+      gap: 6px;
+      min-width: 160px;
+    }
+
+    .msg {
+      padding: 8px 10px;
+      border-radius: 10px;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .msg.error {
+      background: rgba(239, 68, 68, 0.12);
+      color: #fecaca;
+      border: 1px solid rgba(239, 68, 68, 0.22);
+    }
+
+    .msg.warning {
+      background: rgba(245, 158, 11, 0.12);
+      color: #fde68a;
+      border: 1px solid rgba(245, 158, 11, 0.22);
+    }
+
+    .progress {
+      min-width: 96px;
+    }
+
+    .progress-text {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .progress .track {
+      height: 8px;
+      margin-top: 6px;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.16);
+      overflow: hidden;
+    }
+
+    .progress .fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--primary), var(--primary-strong));
+    }
+
+    .drawer-mask {
+      position: fixed;
+      inset: 0;
+      background: rgba(2, 6, 23, 0.58);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.18s ease;
+    }
+
+    .drawer-mask.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .drawer {
+      position: fixed;
+      top: 0;
+      right: 0;
+      width: min(1080px, calc(100vw - 12px));
+      height: 100vh;
+      padding: 18px;
+      background: rgba(8, 15, 30, 0.98);
+      border-left: 1px solid var(--line);
+      box-shadow: -18px 0 50px rgba(2, 6, 23, 0.45);
+      transform: translateX(100%);
+      transition: transform 0.22s ease;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 14px;
+      z-index: 20;
+    }
+
+    .drawer.open {
+      transform: translateX(0);
+    }
+
+    .drawer-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .drawer-title h3 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .drawer-title .code {
+      margin-top: 4px;
+      display: block;
+    }
+
+    .drawer-body {
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding-right: 2px;
+      align-items: stretch;
+    }
+
+    .drawer-grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 10px;
+      align-items: start;
+    }
+
+    .kv {
+      background: var(--panel-soft);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+      min-width: 0;
+      height: fit-content;
+    }
+
+    .kv .label {
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 6px;
+    }
+
+    .kv .value {
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    .result-cell {
+      display: grid;
+      gap: 6px;
+      min-width: 120px;
+    }
+
+    .item-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      min-width: 240px;
+    }
+
+    .result-link {
+      color: #7dd3fc;
+      text-decoration: none;
+      font-size: 12px;
+    }
+
+    .result-link:hover {
+      text-decoration: underline;
+    }
+
+    .row-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .action-link {
+      text-decoration: none;
+    }
+
+    @media (max-width: 900px) {
+      .topbar {
+        flex-direction: column;
+      }
+
+      .stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .drawer-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 640px) {
+      .page {
+        width: min(100%, calc(100% - 20px));
+        padding-top: 18px;
+      }
+
+      .stats {
+        grid-template-columns: 1fr;
+      }
+
+      .drawer {
+        padding: 14px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="topbar">
+      <div class="hero">
+        <h1>批量视频任务</h1>
+        <p>Excel 上传，校验后异步执行。</p>
+      </div>
+      <div class="nav">
+        <button class="btn secondary inline" onclick="location.href='/manage'">
+          <img class="btn-icon" src="/static/icons/batch/manage.svg" alt="" />
+          <span>管理台</span>
+        </button>
+        <button class="btn secondary inline" onclick="location.href='/test'">
+          <img class="btn-icon" src="/static/icons/batch/test.svg" alt="" />
+          <span>测试页</span>
+        </button>
+        <button class="btn danger inline" onclick="logout()">
+          <img class="btn-icon" src="/static/icons/batch/logout.svg" alt="" />
+          <span>退出</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="stack">
+      <div class="panel">
+        <div class="section-head">
+          <h2>创建任务</h2>
+          <div class="hint">xlsx</div>
+        </div>
+        <div class="file-row">
+          <input
+            id="excelFile"
+            class="file-picker"
+            type="file"
+            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          />
+          <div class="actions">
+            <button class="btn secondary inline" id="downloadTemplateBtn">
+              <img class="btn-icon" src="/static/icons/batch/download.svg" alt="" />
+              <span>模板</span>
+            </button>
+            <button class="btn inline" id="parseBtn">
+              <img class="btn-icon" src="/static/icons/batch/check.svg" alt="" />
+              <span>校验</span>
+            </button>
+            <button class="btn inline" id="createBtn" disabled>
+              <img class="btn-icon" src="/static/icons/batch/play.svg" alt="" />
+              <span>执行</span>
+            </button>
+          </div>
+        </div>
+        <div class="stats">
+          <div class="stat">
+            <div class="label">文件</div>
+            <div class="value filename" id="statFile">-</div>
+          </div>
+          <div class="stat">
+            <div class="label">可执行</div>
+            <div class="value" id="statValid">0</div>
+          </div>
+          <div class="stat">
+            <div class="label">错误</div>
+            <div class="value" id="statInvalid">0</div>
+          </div>
+          <div class="stat">
+            <div class="label">总行数</div>
+            <div class="value" id="statTotal">0</div>
+          </div>
+        </div>
+        <div id="parseStatus" class="status-line">未选择文件</div>
+      </div>
+
+      <div class="panel">
+        <div class="section-head">
+          <h3>校验结果</h3>
+          <div class="hint">仅预览</div>
+        </div>
+        <div id="previewWrap"></div>
+      </div>
+
+      <div class="panel">
+        <div class="section-head">
+          <h3>任务列表</h3>
+          <button class="btn secondary inline" id="refreshJobsBtn">
+            <img class="btn-icon" src="/static/icons/batch/refresh.svg" alt="" />
+            <span>刷新</span>
+          </button>
+        </div>
+        <div id="jobsWrap"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="drawer-mask" id="detailMask"></div>
+  <aside class="drawer" id="detailDrawer" aria-hidden="true">
+    <div class="drawer-head">
+      <div class="drawer-title">
+        <h3>任务详情</h3>
+        <span class="code" id="selectedJobHint">未选择任务</span>
+      </div>
+      <button class="btn ghost inline" id="closeDetailBtn">
+        <img class="btn-icon" src="/static/icons/batch/close.svg" alt="" />
+        <span>关闭</span>
+      </button>
+    </div>
+    <div class="drawer-body" id="detailWrap"></div>
+  </aside>
+
+  <script>
+    const STATE = {
+      parsedFileName: "",
+      parsedItems: [],
+      selectedJobId: null,
+      jobs: [],
+      pollingTimer: null,
+      detailOpen: false,
+    };
+
+    function getAdminToken() {
+      return localStorage.getItem("adminToken") || "";
+    }
+
+    function ensureAuth() {
+      const token = getAdminToken();
+      if (!token) {
+        location.href = "/login";
+        return null;
+      }
+      return token;
+    }
+
+    async function apiRequest(url, options = {}) {
+      const token = ensureAuth();
+      if (!token) return null;
+      const headers = { ...(options.headers || {}), Authorization: `Bearer ${token}` };
+      const response = await fetch(url, { ...options, headers });
+      if (response.status === 401) {
+        localStorage.removeItem("adminToken");
+        location.href = "/login";
+        return null;
+      }
+      return response;
+    }
+
+    function logout() {
+      localStorage.removeItem("adminToken");
+      location.href = "/login";
+    }
+
+    function escapeHtml(value) {
+      return String(value || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function badge(status) {
+      const safe = String(status || "unknown").trim() || "unknown";
+      return `<span class="badge ${safe}">${escapeHtml(safe)}</span>`;
+    }
+
+    function renderMessages(items, type) {
+      const safeItems = Array.isArray(items) ? items : [];
+      if (!safeItems.length) return "-";
+      return `<div class="messages">${safeItems.map((item) => `
+        <div class="msg ${type}">${escapeHtml(item.message || item.code || "")}</div>
+      `).join("")}</div>`;
+    }
+
+    function summarizePayload(payload) {
+      if (!payload) return "-";
+      const parts = [
+        payload.model_family || payload.model || "-",
+        payload.duration || "default",
+        payload.aspect_ratio || "16:9",
+      ];
+      if (Array.isArray(payload.input_images) && payload.input_images.length) {
+        parts.push(`images:${payload.input_images.length}`);
+      }
+      if (payload.video_edit_input) {
+        parts.push("video:1");
+      }
+      return parts.join(" | ");
+    }
+
+    function updateParseStats() {
+      const valid = STATE.parsedItems.filter((item) => !(item.errors || []).length).length;
+      const invalid = STATE.parsedItems.filter((item) => (item.errors || []).length).length;
+      document.getElementById("statFile").textContent = STATE.parsedFileName || "-";
+      document.getElementById("statValid").textContent = String(valid);
+      document.getElementById("statInvalid").textContent = String(invalid);
+      document.getElementById("statTotal").textContent = String(STATE.parsedItems.length);
+      document.getElementById("createBtn").disabled = !STATE.parsedItems.length;
+    }
+
+    function renderPreview() {
+      const container = document.getElementById("previewWrap");
+      if (!STATE.parsedItems.length) {
+        container.innerHTML = `<div class="empty">校验后显示结果</div>`;
+        return;
+      }
+
+      container.innerHTML = `
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>row</th>
+                <th>类型</th>
+                <th>摘要</th>
+                <th>错误</th>
+                <th>警告</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${STATE.parsedItems.map((item) => `
+                <tr>
+                  <td>${item.row_index}</td>
+                  <td class="code">${escapeHtml(item.system_row_key || "-")}</td>
+                  <td>${badge(item.task_type || "unknown")}</td>
+                  <td class="code">${escapeHtml(summarizePayload(item.normalized_payload))}</td>
+                  <td>${renderMessages(item.errors, "error")}</td>
+                  <td>${renderMessages(item.warnings, "warning")}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function calcProgress(job) {
+      const total = Number(job.total_count || 0);
+      if (!total) return 0;
+      const done = Number(job.success_count || 0) + Number(job.failed_count || 0);
+      return Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+    }
+
+    function openDetailDrawer() {
+      STATE.detailOpen = true;
+      const mask = document.getElementById("detailMask");
+      const drawer = document.getElementById("detailDrawer");
+      mask.classList.add("open");
+      drawer.classList.add("open");
+      drawer.setAttribute("aria-hidden", "false");
+      document.body.style.overflow = "hidden";
+    }
+
+    function closeDetailDrawer() {
+      STATE.detailOpen = false;
+      const mask = document.getElementById("detailMask");
+      const drawer = document.getElementById("detailDrawer");
+      mask.classList.remove("open");
+      drawer.classList.remove("open");
+      drawer.setAttribute("aria-hidden", "true");
+      document.body.style.overflow = "";
+    }
+
+    function formatResultCell(item) {
+      const resultUrl = String(item.result_url || "").trim();
+      const mediaId = String(item.result_media_id || "").trim();
+      if (!resultUrl && !mediaId) {
+        return `<span class="code">-</span>`;
+      }
+      if (mediaId) {
+        return `<div class="result-cell"><div class="code">${escapeHtml(mediaId)}</div></div>`;
+      }
+      return `<div class="result-cell"><span>已生成</span></div>`;
+    }
+
+    function buildProjectUrl(projectId) {
+      const normalized = String(projectId || "").trim();
+      return normalized
+        ? `https://labs.google/fx/zh/tools/flow/project/${encodeURIComponent(normalized)}`
+        : "";
+    }
+
+    function formatItemActionsCell(item) {
+      const tokenId = Number(item.token_id || 0);
+      const projectId = String(item.project_id || "").trim();
+      const resultUrl = String(item.result_url || "").trim();
+      if ((!tokenId || !projectId) && !resultUrl) {
+        return `<span class="code">-</span>`;
+      }
+      return `
+        <div class="item-actions">
+          ${
+            tokenId && projectId
+              ? `<button class="btn secondary inline row-actions open-project-btn" data-token-id="${tokenId}" data-project-id="${escapeHtml(projectId)}"><img class="btn-icon" src="/static/icons/batch/manage.svg" alt="" /><span>打开项目</span></button>`
+              : ""
+          }
+          ${
+            resultUrl
+              ? `<a class="btn secondary inline row-actions action-link" href="${escapeHtml(resultUrl)}" target="_blank" rel="noreferrer"><img class="btn-icon" src="/static/icons/batch/play.svg" alt="" /><span>打开结果</span></a>`
+              : ""
+          }
+        </div>
+      `;
+    }
+
+    function renderJobs() {
+      const container = document.getElementById("jobsWrap");
+      if (!STATE.jobs.length) {
+        container.innerHTML = `<div class="empty">还没有任务</div>`;
+        return;
+      }
+
+      container.innerHTML = `
+        <div class="table-wrap">
+          <table class="jobs-table">
+            <thead>
+              <tr>
+                <th>任务</th>
+                <th>状态</th>
+                <th>进度</th>
+                <th>成功</th>
+                <th>失败</th>
+                <th>文件</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${STATE.jobs.map((job) => {
+                const progress = calcProgress(job);
+                const disableDelete = String(job.status || "").trim().toLowerCase() === "running" || Number(job.running_count || 0) > 0;
+                return `
+                  <tr class="${job.job_id === STATE.selectedJobId ? "active" : ""}" data-job-id="${escapeHtml(job.job_id)}">
+                    <td class="code">${escapeHtml(job.job_id)}</td>
+                    <td>${badge(job.status)}</td>
+                    <td>
+                      <div class="progress">
+                        <div class="progress-text">${progress}% / ${job.total_count || 0}</div>
+                        <div class="track"><div class="fill" style="width:${progress}%"></div></div>
+                      </div>
+                    </td>
+                    <td>${job.success_count || 0}</td>
+                    <td>${job.failed_count || 0}</td>
+                    <td>${escapeHtml(job.file_name || "-")}</td>
+                    <td>
+                      <button class="btn danger inline row-actions delete-job-btn" data-job-id="${escapeHtml(job.job_id)}" ${disableDelete ? "disabled" : ""}>
+                        <img class="btn-icon" src="/static/icons/batch/delete.svg" alt="" />
+                        <span>删除</span>
+                      </button>
+                    </td>
+                  </tr>
+                `;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+
+      container.querySelectorAll(".delete-job-btn").forEach((btn) => {
+        btn.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          const jobId = btn.getAttribute("data-job-id");
+          if (!jobId) return;
+          await deleteJob(jobId);
+        });
+      });
+
+      container.querySelectorAll("tbody tr").forEach((row) => {
+        row.addEventListener("click", async () => {
+          const jobId = row.getAttribute("data-job-id");
+          if (!jobId) return;
+          STATE.selectedJobId = jobId;
+          renderJobs();
+          await loadJobDetail(jobId);
+          openDetailDrawer();
+        });
+      });
+    }
+
+    function renderDetail(job, items) {
+      document.getElementById("selectedJobHint").textContent = job ? job.job_id : "未选择任务";
+      const container = document.getElementById("detailWrap");
+      if (!job) {
+        container.innerHTML = `<div class="empty">选择任务后查看详情</div>`;
+        return;
+      }
+
+      const progress = calcProgress(job);
+      container.innerHTML = `
+        <div class="drawer-grid">
+          <div class="kv">
+            <div class="label">状态</div>
+            <div class="value">${badge(job.status)}</div>
+          </div>
+          <div class="kv">
+            <div class="label">进度</div>
+            <div class="value">${progress}%</div>
+          </div>
+          <div class="kv">
+            <div class="label">总数</div>
+            <div class="value">${job.total_count || 0}</div>
+          </div>
+          <div class="kv">
+            <div class="label">成功</div>
+            <div class="value">${job.success_count || 0}</div>
+          </div>
+          <div class="kv">
+            <div class="label">失败</div>
+            <div class="value">${job.failed_count || 0}</div>
+          </div>
+          <div class="kv">
+            <div class="label">运行中</div>
+            <div class="value">${job.running_count || 0}</div>
+          </div>
+        </div>
+        ${
+          items.length
+            ? `
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>row</th>
+                      <th>状态</th>
+                      <th>类型</th>
+                      <th>操作</th>
+                      <th>结果</th>
+                      <th>错误</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${items.map((item) => `
+                      <tr>
+                        <td>${item.row_index}</td>
+                        <td class="code">${escapeHtml(item.row_id || "-")}</td>
+                        <td>${badge(item.status)}</td>
+                        <td>${badge(item.task_type)}</td>
+                        <td>${formatItemActionsCell(item)}</td>
+                        <td>${formatResultCell(item)}</td>
+                        <td class="code">${escapeHtml(item.error_message || "-")}</td>
+                      </tr>
+                    `).join("")}
+                  </tbody>
+                </table>
+              </div>
+            `
+            : `<div class="empty">暂无行结果</div>`
+        }
+      `;
+
+      container.querySelectorAll(".open-project-btn").forEach((button) => {
+        button.addEventListener("click", async (event) => {
+          event.preventDefault();
+          const tokenId = Number(button.getAttribute("data-token-id") || 0);
+          const projectId = String(button.getAttribute("data-project-id") || "").trim();
+          await openProjectInTokenBrowser(tokenId, projectId, button);
+        });
+      });
+    }
+
+    async function openProjectInTokenBrowser(tokenId, projectId, button) {
+      if (!tokenId || !projectId) {
+        alert("缺少 token_id 或 project_id");
+        return;
+      }
+      const originalText = button ? button.innerHTML : "";
+      if (button) {
+        button.disabled = true;
+        button.innerHTML = `<img class="btn-icon" src="/static/icons/batch/manage.svg" alt="" /><span>打开中...</span>`;
+      }
+      const response = await apiRequest(`/api/tokens/${encodeURIComponent(tokenId)}/open-project-browser`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: projectId }),
+      });
+      const payload = response ? await response.json().catch(() => null) : null;
+      if (button) {
+        button.disabled = false;
+        button.innerHTML = originalText;
+      }
+      if (!response) return;
+      if (!response.ok || !payload?.success) {
+        alert(payload?.detail || payload?.message || "打开项目失败");
+        return;
+      }
+    }
+
+    async function downloadTemplate() {
+      const response = await apiRequest("/api/batch/template.xlsx");
+      if (!response) return;
+      if (!response.ok) {
+        alert(await response.text());
+        return;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "batch-video-template.xlsx";
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+
+    async function parseExcel() {
+      const input = document.getElementById("excelFile");
+      const file = input.files && input.files[0];
+      if (!file) {
+        alert("先选择 Excel");
+        return;
+      }
+      const formData = new FormData();
+      formData.append("file", file);
+      document.getElementById("parseStatus").textContent = "解析中...";
+
+      const response = await apiRequest("/api/batch/excel/parse", {
+        method: "POST",
+        body: formData,
+      });
+      if (!response) return;
+
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        document.getElementById("parseStatus").textContent = payload?.detail || "解析失败";
+        alert(payload?.detail || "Excel 解析失败");
+        return;
+      }
+
+      STATE.parsedFileName = payload.file_name || file.name;
+      STATE.parsedItems = payload.items || [];
+      updateParseStats();
+      renderPreview();
+      document.getElementById("parseStatus").textContent = `可执行 ${payload.valid_count || 0}，错误 ${payload.invalid_count || 0}`;
+    }
+
+    async function createBatchJob() {
+      if (!STATE.parsedItems.length) {
+        alert("还没有解析结果");
+        return;
+      }
+      const response = await apiRequest("/api/batch/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          file_name: STATE.parsedFileName,
+          items: STATE.parsedItems,
+        }),
+      });
+      if (!response) return;
+
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        alert(payload?.detail || "创建失败");
+        return;
+      }
+
+      STATE.selectedJobId = payload.job_id;
+      await loadJobs();
+      await loadJobDetail(payload.job_id);
+      openDetailDrawer();
+    }
+
+    async function loadJobs() {
+      const response = await apiRequest("/api/batch/jobs");
+      if (!response) return;
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        alert(payload?.detail || "读取任务失败");
+        return;
+      }
+      STATE.jobs = payload.items || [];
+      if (STATE.selectedJobId && !STATE.jobs.some((job) => job.job_id === STATE.selectedJobId)) {
+        STATE.selectedJobId = null;
+        closeDetailDrawer();
+        renderDetail(null, []);
+      }
+      renderJobs();
+    }
+
+    async function loadJobDetail(jobId) {
+      if (!jobId) {
+        renderDetail(null, []);
+        return;
+      }
+      const response = await apiRequest(`/api/batch/jobs/${encodeURIComponent(jobId)}`);
+      if (!response) return;
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        alert(payload?.detail || "读取详情失败");
+        return;
+      }
+      renderDetail(payload.job, payload.items || []);
+    }
+
+    async function deleteJob(jobId) {
+      const job = STATE.jobs.find((entry) => entry.job_id === jobId) || null;
+      const statusText = job ? String(job.status || "unknown") : "unknown";
+      const confirmText = `确认删除任务 ${jobId}？\n状态：${statusText}\n删除后不可恢复。`;
+      if (!confirm(confirmText)) return;
+
+      const response = await apiRequest(`/api/batch/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+      if (!response) return;
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        alert(payload?.detail || "删除失败");
+        return;
+      }
+      if (STATE.selectedJobId === jobId) {
+        STATE.selectedJobId = null;
+        closeDetailDrawer();
+        renderDetail(null, []);
+      }
+      await loadJobs();
+    }
+
+    function startPolling() {
+      if (STATE.pollingTimer) clearInterval(STATE.pollingTimer);
+      STATE.pollingTimer = setInterval(async () => {
+        await loadJobs();
+        if (STATE.selectedJobId) {
+          await loadJobDetail(STATE.selectedJobId);
+        }
+      }, 5000);
+    }
+
+    document.getElementById("downloadTemplateBtn").addEventListener("click", downloadTemplate);
+    document.getElementById("parseBtn").addEventListener("click", parseExcel);
+    document.getElementById("createBtn").addEventListener("click", createBatchJob);
+    document.getElementById("refreshJobsBtn").addEventListener("click", async () => {
+      await loadJobs();
+      if (STATE.selectedJobId) {
+        await loadJobDetail(STATE.selectedJobId);
+      }
+    });
+    document.getElementById("closeDetailBtn").addEventListener("click", closeDetailDrawer);
+    document.getElementById("detailMask").addEventListener("click", closeDetailDrawer);
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && STATE.detailOpen) {
+        closeDetailDrawer();
+      }
+    });
+
+    ensureAuth();
+    updateParseStats();
+    renderPreview();
+    renderJobs();
+    renderDetail(null, []);
+    loadJobs();
+    startPolling();
+  </script>
+</body>
+</html>

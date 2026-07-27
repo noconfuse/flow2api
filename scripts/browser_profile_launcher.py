@@ -270,32 +270,6 @@ def mark_profile_clean_exit(user_data_dir: Path) -> bool:
         return False
 
 
-# #region debug-point B:debug-report-helper
-def report_token5_video_media_debug(hypothesis_id: str, location: str, msg: str, data: dict) -> None:
-    import urllib.request
-
-    payload = {
-        "sessionId": "token5-video-media",
-        "runId": "pre-fix",
-        "hypothesisId": str(hypothesis_id),
-        "location": location,
-        "msg": msg,
-        "data": data,
-    }
-    try:
-        urllib.request.urlopen(
-            urllib.request.Request(
-                "http://127.0.0.1:7777/event",
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-            ),
-            timeout=2,
-        ).read()
-    except Exception:
-        pass
-
-
-# #endregion
 def build_extension_bundle(token: TokenRecord, runtime_settings: dict) -> None:
     ensure_state_dirs()
     version_tag = current_extension_version_tag()
@@ -307,19 +281,6 @@ def build_extension_bundle(token: TokenRecord, runtime_settings: dict) -> None:
     if token.extension_dir.exists():
         shutil.rmtree(token.extension_dir)
     shutil.copytree(EXTENSION_SRC_DIR, token.extension_dir)
-    # #region debug-point B:bundle-built
-    report_token5_video_media_debug(
-        "B",
-        "scripts/browser_profile_launcher.py:build_extension_bundle",
-        "[DEBUG] extension bundle built",
-        {
-            "token_id": token.id,
-            "extension_dir": str(token.extension_dir),
-            "manifest_version": current_extension_version_tag(),
-            "route_key": token.effective_route_key,
-        },
-    )
-    # #endregion
 
     bootstrap = {
         "serverUrl": runtime_settings["ws_url"],
@@ -581,21 +542,6 @@ def launch_profile_with_paths(
     cleared_session_files = clear_profile_session_restore_files(user_data_dir)
     marked_clean_exit = mark_profile_clean_exit(user_data_dir)
     cleared_extension_state = clear_profile_extension_state(user_data_dir)
-    # #region debug-point B:profile-stop-existing
-    report_token5_video_media_debug(
-        "B",
-        "scripts/browser_profile_launcher.py:launch_profile",
-        "[DEBUG] stopped existing profile processes",
-        {
-            "token_id": token_id,
-            "user_data_dir": str(user_data_dir),
-            "stopped_pids": stopped_pids,
-            "cleared_session_files": cleared_session_files,
-            "marked_clean_exit": marked_clean_exit,
-            "cleared_extension_state": cleared_extension_state,
-        },
-    )
-    # #endregion
     command = [
         chrome_path,
         f"--user-data-dir={user_data_dir}",
@@ -616,21 +562,6 @@ def launch_profile_with_paths(
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    # #region debug-point B:profile-launched
-    report_token5_video_media_debug(
-        "B",
-        "scripts/browser_profile_launcher.py:launch_profile",
-        "[DEBUG] browser profile launched",
-        {
-            "token_id": token_id,
-            "extension_dir": str(extension_dir),
-            "user_data_dir": str(user_data_dir),
-            "chrome_path": chrome_path,
-            "startup_url": startup_url,
-            "command": command,
-        },
-    )
-    # #endregion
     return {
         "pid": process.pid,
         "token_id": token_id,

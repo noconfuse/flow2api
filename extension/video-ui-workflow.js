@@ -267,12 +267,21 @@
           return dialogs[0] || null;
         };
 
-        const getReferenceMediaKind = () => {
-          const raw = String(jobPayload.reference_media_kind || "").trim().toLowerCase();
-          return raw === "image" ? "image" : "video";
+        const getReferenceAssets = () => {
+          const raw = Array.isArray(jobPayload.reference_assets) ? jobPayload.reference_assets : [];
+          return raw
+            .filter((asset) => asset && typeof asset === "object")
+            .map((asset) => ({
+              slot: String(asset.slot || "").trim(),
+              media_id: String(asset.media_id || "").trim(),
+              kind: String(asset.kind || asset.asset_kind || "").trim().toLowerCase() || "image",
+              mode: String(asset.mode || "attach").trim().toLowerCase() || "attach",
+              reference_texts: Array.isArray(asset.reference_texts)
+                ? asset.reference_texts.map((item) => String(item || "").trim()).filter(Boolean)
+                : [],
+            }))
+            .filter((asset) => asset.media_id);
         };
-
-        const getReferenceMediaId = () => String(jobPayload.reference_media_id || "").trim();
 
         const collectReferenceMediaIdStrings = (node) => {
           if (!(node instanceof Element)) return [];
@@ -297,27 +306,28 @@
           return values;
         };
 
-        const findReferencePickerItemByMediaId = (pickerItems) => {
-          const referenceMediaId = normalizeUiToken(getReferenceMediaId());
-          if (!referenceMediaId) {
-            return null;
-          }
-
+        const findReferencePickerItemByAsset = (pickerItems, referenceAsset) => {
+          const assetMediaId = normalizeUiToken(referenceAsset?.media_id || "");
+          const assetTexts = Array.isArray(referenceAsset?.reference_texts)
+            ? referenceAsset.reference_texts.map((item) => normalizeUiToken(item)).filter(Boolean)
+            : [];
           const scored = pickerItems
             .map((node, index) => {
               const strings = collectReferenceMediaIdStrings(node);
-              const mediaIdMatched = !!referenceMediaId && strings.some((value) => value.includes(referenceMediaId));
+              const text = normalizeUiToken(textOf(node));
+              const mediaIdMatched = !!assetMediaId && strings.some((value) => value.includes(assetMediaId));
+              const textMatched = !!assetTexts.length && assetTexts.some((value) => text.includes(value));
               return {
                 index,
                 node,
                 strings: strings.slice(0, 8),
                 media_id_matched: mediaIdMatched,
-                score: mediaIdMatched ? 100 : 0,
+                text_matched: textMatched,
+                score: (mediaIdMatched ? 100 : 0) + (textMatched ? 20 : 0),
               };
             })
             .filter((item) => item.score > 0)
             .sort((left, right) => right.score - left.score || left.index - right.index);
-
           return scored[0] || null;
         };
 
@@ -325,7 +335,27 @@
           if (!(dialog instanceof Element)) return [];
           const dialogRect = dialog.getBoundingClientRect();
           const rightPaneBoundary = dialogRect.left + dialogRect.width * 0.96;
-          const minTop = dialogRect.top + 92;
+          const listScroller = dialog.querySelector("[data-virtuoso-scroller='true']");
+          const listRect = listScroller instanceof Element ? listScroller.getBoundingClientRect() : null;
+          const minTop = listRect ? Math.max(dialogRect.top + 12, listRect.top - 8) : dialogRect.top + 24;
+          const listRightBoundary = listRect
+            ? Math.min(dialogRect.left + dialogRect.width * 0.56, listRect.right + 12)
+            : dialogRect.left + dialogRect.width * 0.56;
+          const optionCandidates = Array.from(dialog.querySelectorAll("[role='option']"))
+            .filter((node) => visible(node))
+            .filter((node) => {
+              if (!(node instanceof Element)) return false;
+              const rect = node.getBoundingClientRect();
+              if (rect.width < 72 || rect.height < 72) return false;
+              if (rect.left > listRightBoundary) return false;
+              if (rect.right > dialogRect.left + dialogRect.width * 0.66) return false;
+              if (rect.bottom < minTop) return false;
+              return true;
+            })
+            .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top);
+          if (optionCandidates.length) {
+            return optionCandidates;
+          }
           const seen = new Set();
           const candidates = [];
 
@@ -348,6 +378,7 @@
             if (rect.height > dialogRect.height * 0.9) return -1;
             const mediaCount = node.querySelectorAll("video, img").length;
             const text = textOf(node);
+            if (text.includes("添加到提示")) return -1;
             const role = String(node.getAttribute("role") || "");
             let score = mediaCount * 20;
             if (role === "option") score += 30;
@@ -375,7 +406,8 @@
             .filter((node) => visible(node))
             .forEach((row) => {
               const rect = row.getBoundingClientRect();
-              if (rect.left > rightPaneBoundary || rect.top < minTop) return;
+              if (rect.left > listRightBoundary || rect.right > dialogRect.left + dialogRect.width * 0.66) return;
+              if (rect.bottom < minTop) return;
               const option = row.querySelector("[role='option']");
               addCandidate(option instanceof Element ? option : row);
             });
@@ -428,22 +460,48 @@
           });
         };
 
-        const ensureReferenceSelected = async (dialog) => {
-          const pickerItems = collectMediaPickerItems(dialog);
-          const referenceMediaId = getReferenceMediaId();
-          if (!referenceMediaId) {
+        const ensureReferenceAssetSelected = async (dialog, referenceAsset) => {
+          await waitFor(() => dialog.querySelectorAll("[role='option']").length ? true : null, 9000, 120);
+          const assetMediaId = normalizeUiToken(referenceAsset?.media_id || "");
+          const selectedOption = Array.from(dialog.querySelectorAll("[role='option'][aria-selected='true']"))
+            .filter((node) => visible(node))
+            .find((node) => {
+              if (!(node instanceof Element)) return false;
+              if (!assetMediaId) return false;
+              const strings = collectReferenceMediaIdStrings(node);
+              return strings.some((value) => value.includes(assetMediaId));
+            }) || null;
+          if (selectedOption) {
+            const selected = await waitFor(
+              () => {
+                const timelineReady = getTimelineState(dialog);
+                if (timelineReady && timelineReady.handles.length >= 2) {
+                  return true;
+                }
+                const addToPromptButton = findAddToPromptButton(dialog);
+                return addToPromptButton ? true : null;
+              },
+              12000,
+              120
+            );
             return {
-              ok: false,
-              reason: "missing_reference_media_id",
-              picker_count: pickerItems.length,
+              ok: !!selected,
+              action: "reference_tile_already_selected",
+              tile: summarizeElement(selectedOption),
+              match_strategy: "reference_asset_media_id",
+              resolved_target_index: Number.parseInt(String(selectedOption.closest("[data-item-index]")?.getAttribute("data-item-index") || ""), 10),
+              reference_asset: referenceAsset,
+              picker_count: dialog.querySelectorAll("[role='option']").length,
             };
           }
-          const matchedItem = findReferencePickerItemByMediaId(pickerItems);
+          await waitFor(() => collectMediaPickerItems(dialog).length ? true : null, 9000, 120);
+          const pickerItems = collectMediaPickerItems(dialog);
+          const matchedItem = findReferencePickerItemByAsset(pickerItems, referenceAsset);
           if (!matchedItem) {
             return {
               ok: false,
-              reason: "reference_media_id_not_found",
-              reference_media_id: referenceMediaId,
+              reason: "reference_asset_not_found",
+              reference_asset: referenceAsset,
               picker_count: pickerItems.length,
               picker_samples: pickerItems.slice(0, 8).map((node) => ({
                 tile: summarizeElement(node),
@@ -469,9 +527,9 @@
             ok: !!selected,
             action: "clicked_reference_tile",
             tile: summarizeElement(targetItem),
-            match_strategy: "reference_media_id",
+            match_strategy: matchedItem.media_id_matched ? "reference_asset_media_id" : "reference_asset_text",
             resolved_target_index: matchedItem.index,
-            reference_media_id: referenceMediaId,
+            reference_asset: referenceAsset,
             picker_count: pickerItems.length,
           };
         };
@@ -663,6 +721,22 @@
             });
           } catch (_error) {
             return new Event(type, { bubbles: true, cancelable: true });
+          }
+        };
+
+        const dispatchPromptKeyEvent = (target, type, key, options = {}) => {
+          if (!(target instanceof Element)) return false;
+          try {
+            target.dispatchEvent(new KeyboardEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              composed: true,
+              key,
+              ...options,
+            }));
+            return true;
+          } catch (_error) {
+            return false;
           }
         };
 
@@ -2475,6 +2549,243 @@
           };
         };
 
+        const appendPromptText = async (promptText) => {
+          const target = await waitFor(() => findPromptTarget(), 6000, 100);
+          if (!(target instanceof Element)) {
+            return { ok: false, reason: "prompt_target_not_found" };
+          }
+          const valueToInsert = String(promptText || "");
+          if (!valueToInsert) {
+            return { ok: true, skipped: true, reason: "empty_prompt_segment", target: summarizeElement(target) };
+          }
+          const beforeText = textOf(target);
+          clickNode(target, { nativeOnly: true });
+          await sleep(80);
+          target.focus();
+          if (target.getAttribute("data-slate-editor") === "true") {
+            placeCaretAtEnd(target);
+            const pasteDispatched = dispatchPasteText(target, valueToInsert);
+            await sleep(80);
+            let insertedText = textOf(target);
+            let inserted = insertedText.includes(valueToInsert.trim()) || insertedText.endsWith(valueToInsert);
+            if (!inserted) {
+              target.dispatchEvent(createInputEvent("beforeinput", valueToInsert));
+              try {
+                inserted = document.execCommand("insertText", false, valueToInsert);
+              } catch (_error) {
+                inserted = false;
+              }
+              if (!inserted) {
+                const selection = window.getSelection();
+                const range = getEditableRangeWithinTarget(target);
+                if (!range) {
+                  throw new Error("prompt_edit_range_not_available");
+                }
+                const textNode = document.createTextNode(valueToInsert);
+                range.deleteContents();
+                range.insertNode(textNode);
+                range.setStartAfter(textNode);
+                range.collapse(true);
+                selection?.removeAllRanges();
+                selection?.addRange(range);
+              }
+              target.dispatchEvent(createInputEvent("input", valueToInsert));
+              target.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+              await sleep(120);
+              insertedText = textOf(target);
+            }
+            return {
+              ok: true,
+              target: summarizeElement(target),
+              before_text: beforeText.slice(0, 200),
+              after_text: insertedText.slice(0, 240),
+              paste_dispatched: pasteDispatched,
+              runtime: collectPromptRuntimeEvidence(target),
+              submit_state: summarizeSubmitButtonState(),
+            };
+          }
+          return await typePrompt(valueToInsert);
+        };
+
+        const triggerPromptMention = async () => {
+          const target = await waitFor(() => findPromptTarget(), 6000, 100);
+          if (!(target instanceof Element)) {
+            return { ok: false, reason: "prompt_target_not_found" };
+          }
+          const beforeText = textOf(target);
+          if (document.activeElement !== target && !target.contains(document.activeElement)) {
+            clickNode(target, { nativeOnly: true });
+            await sleep(80);
+          }
+          target.focus();
+          placeCaretAtEnd(target);
+          dispatchPromptKeyEvent(target, "keydown", "Shift", {
+            code: "ShiftLeft",
+            shiftKey: true,
+            keyCode: 16,
+            which: 16,
+          });
+          dispatchPromptKeyEvent(target, "keydown", "@", {
+            code: "Digit2",
+            shiftKey: true,
+            keyCode: 50,
+            which: 50,
+          });
+          dispatchPromptKeyEvent(target, "keypress", "@", {
+            code: "Digit2",
+            shiftKey: true,
+            charCode: 64,
+            keyCode: 64,
+            which: 64,
+          });
+
+          let dialog = null;
+          try {
+            await sleep(220);
+            dialog = getMediaPickerDialog();
+          } finally {
+            dispatchPromptKeyEvent(target, "keyup", "@", {
+              code: "Digit2",
+              shiftKey: true,
+              keyCode: 50,
+              which: 50,
+            });
+            dispatchPromptKeyEvent(target, "keyup", "Shift", {
+              code: "ShiftLeft",
+              keyCode: 16,
+              which: 16,
+            });
+          }
+
+          if (!dialog) {
+            dialog = await waitFor(() => getMediaPickerDialog(), 4000, 100);
+          }
+          return {
+            ok: !!dialog,
+            reason: !dialog ? "mention_dialog_not_found" : "",
+            target: summarizeElement(target),
+            before_text: beforeText.slice(0, 200),
+            after_text: textOf(target).slice(0, 240),
+            append_result: {
+              ok: !!dialog,
+              inserted_text: textOf(target).slice(0, 240),
+            },
+            dialog: summarizeElement(dialog),
+            runtime: collectPromptRuntimeEvidence(target),
+            submit_state: summarizeSubmitButtonState(),
+          };
+        };
+
+        const attachReferenceAsset = async (referenceAsset, options = {}) => {
+          const createLauncher = await waitFor(() => findCreateLauncher(), 6000, 100);
+          if (!createLauncher) {
+            return { ok: false, reason: "create_launcher_not_found", reference_asset: referenceAsset };
+          }
+          clickNode(createLauncher);
+          await humanPause(320, 760);
+          const dialog = await waitFor(() => getMediaPickerDialog(), 6000, 100);
+          if (!dialog) {
+            return { ok: false, reason: "create_dialog_not_found", reference_asset: referenceAsset };
+          }
+          const selection = await ensureReferenceAssetSelected(dialog, referenceAsset);
+          if (!selection.ok) {
+            return selection;
+          }
+          if (options.adjustTimeRange) {
+            const rangeResult = await maybeAdjustTimeRange(dialog);
+            if (!rangeResult.ok) {
+              return { ok: false, reason: "time_range_failed", detail: rangeResult, reference_asset: referenceAsset };
+            }
+          }
+          const addToPromptButton = await waitFor(() => findAddToPromptButton(dialog), 4000, 100);
+          if (!addToPromptButton) {
+            return { ok: false, reason: "add_to_prompt_button_not_found", reference_asset: referenceAsset };
+          }
+          clickNode(addToPromptButton);
+          await waitFor(() => !getMediaPickerDialog() ? true : null, 4000, 100);
+          await humanPause(420, 920);
+          return { ok: true, reference_asset: referenceAsset, selection };
+        };
+
+        const attachReferenceAssets = async (referenceAssets, options = {}) => {
+          const results = [];
+          for (const referenceAsset of (referenceAssets || [])) {
+            const result = await attachReferenceAsset(referenceAsset, options);
+            results.push(result);
+            if (!result.ok) {
+              return { ok: false, results, failed_asset: referenceAsset, reason: result.reason || "attach_reference_failed" };
+            }
+          }
+          return { ok: true, results, count: results.length };
+        };
+
+        const typePromptTemplateWithMentions = async (promptTemplate, referenceAssets) => {
+          const template = String(promptTemplate || "");
+          const assetsBySlot = new Map(
+            (referenceAssets || [])
+              .filter((asset) => asset && typeof asset === "object" && asset.slot)
+              .map((asset) => [String(asset.slot || "").trim().toLowerCase(), asset])
+          );
+          const mentionPattern = /@(image_[1-5]|video_[1-2])\b/ig;
+          let cursor = 0;
+          const operations = [];
+          for (const match of template.matchAll(mentionPattern)) {
+            const slot = String(match[1] || "").trim().toLowerCase();
+            const index = Number(match.index || 0);
+            const textChunk = template.slice(cursor, index);
+            if (textChunk) {
+              const textResult = await appendPromptText(textChunk);
+              operations.push({ type: "text", value: textChunk, result: textResult });
+              if (!textResult.ok) {
+                return { ok: false, reason: textResult.reason || "prompt_text_insert_failed", operations };
+              }
+            }
+            const asset = assetsBySlot.get(slot);
+            if (!asset) {
+              return { ok: false, reason: `missing_reference_asset_for_${slot}`, operations };
+            }
+            const triggerResult = await triggerPromptMention();
+            operations.push({ type: "trigger", slot, result: triggerResult });
+            if (!triggerResult.ok) {
+              return { ok: false, reason: triggerResult.reason || "prompt_mention_trigger_failed", operations };
+            }
+            const dialog = getMediaPickerDialog();
+            if (!dialog) {
+              return { ok: false, reason: "mention_dialog_not_found", slot, operations };
+            }
+            const selectionResult = await ensureReferenceAssetSelected(dialog, asset);
+            operations.push({ type: "mention_select", slot, result: selectionResult });
+            if (!selectionResult.ok) {
+              return { ok: false, reason: selectionResult.reason || "mention_reference_not_found", operations };
+            }
+            const addToPromptButton = await waitFor(() => findAddToPromptButton(dialog), 3000, 100);
+            if (!addToPromptButton) {
+              return { ok: false, reason: "mention_add_button_not_found", slot, operations };
+            }
+            clickNode(addToPromptButton);
+            await waitFor(() => !getMediaPickerDialog() ? true : null, 4000, 100);
+            const promptTargetAfterAdd = await waitFor(() => findPromptTarget(), 4000, 100);
+            if (promptTargetAfterAdd instanceof Element) {
+              clickNode(promptTargetAfterAdd, { nativeOnly: true });
+              await sleep(80);
+              promptTargetAfterAdd.focus();
+              placeCaretAtEnd(promptTargetAfterAdd);
+              await sleep(80);
+            }
+            await humanPause(240, 580);
+            cursor = index + match[0].length;
+          }
+          const tail = template.slice(cursor);
+          if (tail) {
+            const tailResult = await appendPromptText(tail);
+            operations.push({ type: "text", value: tail, result: tailResult });
+            if (!tailResult.ok) {
+              return { ok: false, reason: tailResult.reason || "prompt_tail_insert_failed", operations };
+            }
+          }
+          return { ok: true, operations, submit_state: summarizeSubmitButtonState() };
+        };
+
         const findSubmitButton = () => {
           const buttons = collectVisibleButtons().filter((node) => !getActiveDialog() || !getActiveDialog().contains(node));
           const submitCandidates = buttons.filter((node) => {
@@ -2514,6 +2825,7 @@
         };
 
         const workflowMode = String(jobPayload.workflow_mode || "").trim();
+        const probeOnly = !!jobPayload.probe_only;
         if (!["edit_existing_video", "text_to_video"].includes(workflowMode)) {
           return finalize({
             result_version: "video_ui_workflow_v1",
@@ -2537,47 +2849,22 @@
             );
           }
           await humanPause(320, 760);
+          const referenceAssets = getReferenceAssets();
+          const attachAssets = referenceAssets.filter((asset) => asset.mode !== "mention");
+          const mentionAssets = referenceAssets.filter((asset) => asset.mode === "mention");
 
           if (workflowMode === "edit_existing_video") {
-            const createLauncher = await waitFor(() => findCreateLauncher(), 6000, 100);
-            if (!createLauncher) {
-              throw new Error("create launcher not found");
+            const videoAsset = attachAssets[0] || referenceAssets[0] || null;
+            if (!videoAsset) {
+              throw new Error("edit workflow missing reference asset");
             }
-            clickNode(createLauncher);
-            recordStep("open_create_dialog", { button: summarizeElement(createLauncher) });
-            await humanPause(320, 760);
-
-            const dialog = await waitFor(() => getMediaPickerDialog(), 6000, 100);
-            if (!dialog) {
-              throw new Error("create dialog not found");
-            }
-            recordStep("dialog_ready", { dialog: summarizeElement(dialog) });
-
-            const referenceSelection = await ensureReferenceSelected(dialog);
-            if (!referenceSelection.ok) {
+            const attachResult = await attachReferenceAsset(videoAsset, { adjustTimeRange: true });
+            recordStep("reference_attached", attachResult);
+            if (!attachResult.ok) {
               throw new Error(
-                `reference selection failed: ${referenceSelection.reason || "unknown"}; detail=${JSON.stringify(referenceSelection)}`
+                `reference attach failed: ${attachResult.reason || "unknown"}; detail=${JSON.stringify(attachResult)}`
               );
             }
-            recordStep("reference_selected", referenceSelection);
-            await humanPause(700, 1450);
-
-            const rangeResult = await maybeAdjustTimeRange(dialog);
-            if (!rangeResult.ok) {
-              throw new Error(
-                `time range failed: ${rangeResult.reason || "unknown"}; detail=${JSON.stringify(rangeResult)}`
-              );
-            }
-            recordStep("time_range_ready", rangeResult);
-            await humanPause(650, 1300);
-
-            const addToPromptButton = await waitFor(() => findAddToPromptButton(dialog), 4000, 100);
-            if (!addToPromptButton) {
-              throw new Error("add-to-prompt button not found");
-            }
-            clickNode(addToPromptButton);
-            recordStep("add_to_prompt", { button: summarizeElement(addToPromptButton) });
-
             await humanPause(800, 1650);
           } else {
             const composerReady = await waitForVideoComposerReady();
@@ -2586,6 +2873,15 @@
               throw new Error("video composer controls not ready");
             }
             await humanPause(420, 900);
+            if (attachAssets.length) {
+              const attachResult = await attachReferenceAssets(attachAssets);
+              recordStep("reference_assets_attached", attachResult);
+              if (!attachResult.ok) {
+                throw new Error(
+                  `reference assets attach failed: ${attachResult.reason || "unknown"}; detail=${JSON.stringify(attachResult)}`
+                );
+              }
+            }
           }
 
           const desiredSettingsResult = await applyDesiredVideoSettings();
@@ -2609,11 +2905,25 @@
           }
           await humanPause(260, 520);
 
-          const promptResult = await typePrompt(String(jobPayload.prompt || ""));
+          const promptTemplate = String(jobPayload.prompt || "");
+          const promptResult = mentionAssets.length
+            ? await typePromptTemplateWithMentions(promptTemplate, referenceAssets)
+            : await typePrompt(promptTemplate);
+          recordStep("prompt_typed", promptResult);
           if (!promptResult.ok) {
             throw new Error(`prompt typing failed: ${promptResult.reason || "unknown"}`);
           }
-          recordStep("prompt_typed", promptResult);
+
+          if (probeOnly) {
+            return finalize({
+              result_version: "video_ui_workflow_v1",
+              success: true,
+              workflow_mode: workflowMode,
+              probe_only: true,
+              submitted: false,
+              steps,
+            });
+          }
 
           installVideoEditSubmitHook();
           const submitHookBefore = getSubmitHookSnapshot();

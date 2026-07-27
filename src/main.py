@@ -14,8 +14,9 @@ from .services.proxy_manager import ProxyManager
 from .services.token_manager import TokenManager
 from .services.load_balancer import LoadBalancer
 from .services.concurrency_manager import ConcurrencyManager
+from .services.batch_executor import BatchExecutor
 from .services.generation_handler import GenerationHandler
-from .api import routes, admin, capture_debug
+from .api import routes, admin, batch, capture_debug
 
 
 @asynccontextmanager
@@ -210,10 +211,12 @@ generation_handler = GenerationHandler(
     concurrency_manager,
     proxy_manager  # 添加 proxy_manager 参数
 )
+batch_executor = BatchExecutor(db, generation_handler)
 
 # Set dependencies
 routes.set_generation_handler(generation_handler)
 admin.set_dependencies(token_manager, proxy_manager, db, concurrency_manager)
+batch.set_dependencies(token_manager, db, batch_executor)
 capture_debug.set_dependencies(db)
 
 # Create FastAPI app
@@ -236,15 +239,18 @@ app.add_middleware(
 # Include routers
 app.include_router(routes.router)
 app.include_router(admin.router)
+app.include_router(batch.router)
 app.include_router(capture_debug.router)
 
-# Static files - serve tmp directory for cached files
+# Static files
 tmp_dir = Path(__file__).parent.parent / "tmp"
 tmp_dir.mkdir(exist_ok=True)
 app.mount("/tmp", StaticFiles(directory=str(tmp_dir)), name="tmp")
 
-# HTML routes for frontend
 static_path = Path(__file__).parent.parent / "static"
+app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+
+# HTML routes for frontend
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -281,6 +287,15 @@ async def test_page():
     if test_file.exists():
         return FileResponse(str(test_file))
     return HTMLResponse(content="<h1>Test Page Not Found</h1>", status_code=404)
+
+
+@app.get("/batch", response_class=HTMLResponse)
+async def batch_page():
+    """CSV batch task page"""
+    batch_file = static_path / "batch.html"
+    if batch_file.exists():
+        return FileResponse(str(batch_file))
+    return HTMLResponse(content="<h1>Batch Page Not Found</h1>", status_code=404)
 
 
 @app.get("/metrics")

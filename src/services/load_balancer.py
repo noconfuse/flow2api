@@ -2,7 +2,7 @@
 import asyncio
 import random
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Iterable
 from ..core.models import Token
 from ..core.config import config
 from ..core.account_tiers import (
@@ -286,6 +286,7 @@ class LoadBalancer:
         enforce_concurrency_filter: bool = True,
         track_pending: bool = False,
         preferred_token_id: Optional[int] = None,
+        excluded_token_ids: Optional[Iterable[int]] = None,
         _auto_launch_attempted: bool = False,
     ) -> Optional[Token]:
         """
@@ -307,10 +308,15 @@ class LoadBalancer:
         Returns:
             Selected token or None if no available tokens
         """
+        excluded_ids = {
+            int(token_id)
+            for token_id in (excluded_token_ids or [])
+            if token_id is not None
+        }
         debug_logger.log_info(
             f"[LOAD_BALANCER] 开始选择Token (图片生成={for_image_generation}, "
             f"视频生成={for_video_generation}, 模型={model}, 预占槽位={reserve}, "
-            f"preferred_token_id={preferred_token_id})"
+            f"preferred_token_id={preferred_token_id}, excluded_token_ids={sorted(excluded_ids)})"
         )
 
         active_tokens = await self.token_manager.get_active_tokens()
@@ -324,6 +330,14 @@ class LoadBalancer:
             active_tokens = [token for token in active_tokens if token.id == preferred_token_id]
             debug_logger.log_info(
                 f"[LOAD_BALANCER] 指定Token模式，过滤后剩余 {len(active_tokens)} 个候选"
+            )
+            if not active_tokens:
+                return None
+
+        if excluded_ids:
+            active_tokens = [token for token in active_tokens if token.id not in excluded_ids]
+            debug_logger.log_info(
+                f"[LOAD_BALANCER] 已排除 {len(excluded_ids)} 个局部失败Token，剩余 {len(active_tokens)} 个候选"
             )
             if not active_tokens:
                 return None
@@ -442,6 +456,7 @@ class LoadBalancer:
                                 enforce_concurrency_filter=enforce_concurrency_filter,
                                 track_pending=track_pending,
                                 preferred_token_id=preferred_token_id,
+                                excluded_token_ids=excluded_ids,
                                 _auto_launch_attempted=True,
                             )
                         debug_logger.log_warning(
@@ -558,11 +573,22 @@ class LoadBalancer:
         for_image_generation: bool = False,
         for_video_generation: bool = False,
         model: Optional[str] = None,
+        excluded_token_ids: Optional[Iterable[int]] = None,
     ) -> Optional[str]:
         """给出更明确的“无可用账号”原因，优先用于分辨率/tier 档位提示。"""
         active_tokens = await self.token_manager.get_active_tokens()
         if not active_tokens:
             return None
+
+        excluded_ids = {
+            int(token_id)
+            for token_id in (excluded_token_ids or [])
+            if token_id is not None
+        }
+        if excluded_ids:
+            active_tokens = [token for token in active_tokens if token.id not in excluded_ids]
+            if not active_tokens:
+                return "当前批量重试已排除全部已失败账号，暂无其它可用账号。"
 
         required_tier = get_required_paygate_tier_for_model(model)
         supported_tokens = []

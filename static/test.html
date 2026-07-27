@@ -340,10 +340,11 @@ h1 { text-align: center; margin-bottom: 8px; font-size: 24px; color: #7c8aff; }
 .media-list { display: grid; gap: 8px; }
 .media-item {
   border: 1px solid #2a2b3a; border-radius: 8px; background: #171924; padding: 10px; cursor: pointer;
-  display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px; align-items: center;
+  display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; gap: 10px; align-items: center;
 }
 .media-item:hover { border-color: #4650b5; }
 .media-item.active { border-color: #7c8aff; background: #1f2340; }
+.media-item.selected { border-color: #34d399; box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.3); }
 .media-thumb {
   width: 56px; height: 56px; border-radius: 8px; background: #0f1117; overflow: hidden;
   display: flex; align-items: center; justify-content: center; color: #7f8498; font-size: 11px;
@@ -352,6 +353,27 @@ h1 { text-align: center; margin-bottom: 8px; font-size: 24px; color: #7c8aff; }
 .media-main { min-width: 0; display: grid; gap: 4px; }
 .media-name { font-size: 13px; color: #e1e1e6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .media-meta { font-size: 12px; color: #7f8498; display: flex; gap: 8px; flex-wrap: wrap; }
+.media-item-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+.media-pick-btn {
+  border: 1px solid #2a2b3a;
+  background: #11131b;
+  color: #c7cbda;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.media-pick-btn:hover { border-color: #4650b5; }
+.media-pick-btn.active {
+  border-color: #34d399;
+  background: rgba(16, 185, 129, 0.14);
+  color: #86efac;
+}
 .preview-panel { display: grid; gap: 16px; }
 .preview-card {
   background: #1a1b26; border: 1px solid #2a2b3a; border-radius: 10px; padding: 16px; min-height: 220px;
@@ -370,6 +392,57 @@ h1 { text-align: center; margin-bottom: 8px; font-size: 24px; color: #7c8aff; }
 .workbench-upload-status.is-error { color: #fca5a5; }
 .workbench-upload-status.is-success { color: #86efac; }
 .preview-empty { font-size: 13px; color: #7f8498; padding: 24px 0; }
+.preview-selected-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.preview-selected-item {
+  border: 1px solid #2a2b3a;
+  border-radius: 10px;
+  background: #11131b;
+  overflow: hidden;
+  cursor: pointer;
+  text-align: left;
+}
+.preview-selected-item:hover { border-color: #4650b5; }
+.preview-selected-item.active {
+  border-color: #7c8aff;
+  box-shadow: inset 0 0 0 1px rgba(124, 138, 255, 0.22);
+}
+.preview-selected-thumb {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background: #0f1117;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: #7f8498;
+  font-size: 11px;
+}
+.preview-selected-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.preview-selected-meta {
+  padding: 8px 10px 10px;
+  display: grid;
+  gap: 4px;
+}
+.preview-selected-name {
+  font-size: 12px;
+  color: #e8ebff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-selected-sub {
+  font-size: 11px;
+  color: #8f96aa;
+}
 .preview-box {
   background: #0f1117; border: 1px solid #222433; border-radius: 10px; min-height: 320px;
   display: flex; align-items: center; justify-content: center; overflow: hidden; margin-bottom: 14px;
@@ -456,6 +529,198 @@ h1 { text-align: center; margin-bottom: 8px; font-size: 24px; color: #7c8aff; }
   font-size: 12px;
   color: #9aa1b5;
   white-space: nowrap;
+}
+.derived-reference-group {
+  display: none;
+  margin-top: -2px;
+}
+.derived-reference-list {
+  display: grid;
+  gap: 10px;
+}
+.derived-reference-item {
+  border: 1px solid #2a2b3a;
+  border-radius: 10px;
+  background: #11131b;
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+.derived-reference-item.is-mentioned {
+  border-color: rgba(124, 138, 255, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(124, 138, 255, 0.16);
+}
+.derived-reference-thumb {
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #0f1117;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #7f8498;
+  font-size: 11px;
+}
+.derived-reference-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.derived-reference-item-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.derived-reference-item-title {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.derived-reference-slot {
+  font-size: 11px;
+  color: #7c8aff;
+  background: rgba(124, 138, 255, 0.12);
+  border: 1px solid rgba(124, 138, 255, 0.28);
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+.derived-reference-name {
+  font-size: 13px;
+  color: #e8ebff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.derived-reference-meta {
+  font-size: 12px;
+  color: #8f96aa;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.derived-reference-state {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid #2a2b3a;
+  background: #171924;
+  color: #a8afc2;
+}
+.derived-reference-state.is-mentioned {
+  border-color: rgba(124, 138, 255, 0.4);
+  background: rgba(124, 138, 255, 0.12);
+  color: #c7d2fe;
+}
+.derived-reference-state.is-attach {
+  border-color: rgba(52, 211, 153, 0.25);
+  background: rgba(52, 211, 153, 0.08);
+  color: #a7f3d0;
+}
+.derived-reference-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+.derived-reference-insert-btn {
+  min-width: 98px;
+  background: #0f1117;
+  color: #e1e1e6;
+  border: 1px solid #2a2b3a;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.derived-reference-insert-btn:hover { border-color: #4650b5; }
+.derived-prompt-wrap {
+  position: relative;
+}
+.derived-mention-popover {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 20;
+  border: 1px solid #2a2b3a;
+  border-radius: 12px;
+  background: #11131b;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.36);
+  overflow: hidden;
+}
+.derived-mention-popover.hidden {
+  display: none;
+}
+.derived-mention-list {
+  display: grid;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.derived-mention-item {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid #1f2231;
+  cursor: pointer;
+}
+.derived-mention-item:last-child {
+  border-bottom: none;
+}
+.derived-mention-item:hover,
+.derived-mention-item.active {
+  background: #171924;
+}
+.derived-mention-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0f1117;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #7f8498;
+  font-size: 11px;
+}
+.derived-mention-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.derived-mention-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.derived-mention-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.derived-mention-name {
+  font-size: 13px;
+  color: #e8ebff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.derived-mention-meta {
+  font-size: 12px;
+  color: #8f96aa;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.derived-mention-empty {
+  padding: 12px;
+  font-size: 12px;
+  color: #8f96aa;
 }
 .derived-preview-shell {
   display: none;
@@ -694,7 +959,16 @@ h1 { text-align: center; margin-bottom: 8px; font-size: 24px; color: #7c8aff; }
           </div>
           <div class="form-group">
             <label>提示词</label>
-            <textarea id="derivedPromptInput" placeholder="描述你希望基于该媒体继续生成什么..."></textarea>
+            <div class="derived-prompt-wrap">
+              <textarea id="derivedPromptInput" placeholder="描述你希望基于该媒体继续生成什么。输入 @ 可唤起已选图片引用..."></textarea>
+              <div class="derived-mention-popover hidden" id="derivedPromptMentionPopover"></div>
+            </div>
+            <div class="form-hint" id="derivedPromptInputHint">输入 `@` 可从已选图片里插入 `@image_1` / `@image_2` 等引用；未被引用的图片会自动作为附加参考一起上传。</div>
+          </div>
+          <div class="form-group derived-reference-group" id="derivedReferenceAssetsGroup">
+            <label>参考图</label>
+            <div class="derived-reference-list" id="derivedReferenceAssetsList"></div>
+            <div class="form-hint" id="derivedReferenceAssetsHint"></div>
           </div>
           <div class="form-group" id="derivedEditRangeGroup" style="display:none;">
             <label>片段范围</label>
@@ -756,6 +1030,7 @@ const STATE = {
   selectedWorkbenchTokenId: 0,
   selectedWorkbenchProjectId: "",
   selectedWorkbenchMediaName: "",
+  selectedWorkbenchImageNames: [],
   workbenchUploadFile: null,
   workbenchUploadBusy: false,
   preferredSourceTokenId: 0,
@@ -772,10 +1047,12 @@ const STATE = {
     mediaName: "",
     mediaType: "",
     previewUrl: "",
+    sourceAssets: [],
     selectedModel: "",
     activeOperation: "",
     activeModelFamily: "",
     generating: false,
+    mentionActiveIndex: 0,
   },
 };
 </script>
@@ -791,6 +1068,7 @@ const DERIVED_OPERATION_CONFIGS = [
   { id: "edit_video", label: "编辑视频", description: "基于已选视频做编辑" },
   { id: "extend_video", label: "续写视频", description: "基于已选视频继续生成" },
 ];
+const WORKBENCH_IMAGE_SELECTION_LIMIT = 5;
 
 // Model categories for sidebar
 const MODEL_CATEGORIES = {
@@ -1279,6 +1557,215 @@ function findWorkbenchMedia(tokenId, projectId, mediaName) {
   return media.find(item => String(item.media_id || item.name || "") === String(mediaName || "")) || null;
 }
 
+function getWorkbenchSelectedImageNames() {
+  return Array.isArray(STATE.selectedWorkbenchImageNames) ? STATE.selectedWorkbenchImageNames : [];
+}
+
+function getWorkbenchSelectedImageEntries(tokenId = STATE.selectedWorkbenchTokenId, projectId = STATE.selectedWorkbenchProjectId) {
+  return getWorkbenchSelectedImageNames()
+    .map((mediaName) => findWorkbenchMedia(tokenId, projectId, mediaName))
+    .filter((entry) => entry && String(entry.media_type || "").toLowerCase() === "image");
+}
+
+function isWorkbenchImageSelected(mediaName) {
+  return getWorkbenchSelectedImageNames().includes(String(mediaName || ""));
+}
+
+function toggleWorkbenchImageSelection(media) {
+  const mediaName = String(media && (media.media_id || media.name) || "");
+  if (!mediaName || String(media.media_type || "").toLowerCase() !== "image") return;
+  const current = getWorkbenchSelectedImageNames();
+  if (current.includes(mediaName)) {
+    STATE.selectedWorkbenchImageNames = current.filter((item) => item !== mediaName);
+    return;
+  }
+  if (current.length >= WORKBENCH_IMAGE_SELECTION_LIMIT) {
+    alert(`媒体工作台当前最多选择 ${WORKBENCH_IMAGE_SELECTION_LIMIT} 张图片`);
+    return;
+  }
+  STATE.selectedWorkbenchImageNames = [...current, mediaName];
+}
+
+function getDerivedReferenceSlot(index) {
+  return `image_${index + 1}`;
+}
+
+function buildDerivedSourceAssets(primaryMedia) {
+  const mediaType = String(primaryMedia && primaryMedia.media_type || "").toLowerCase();
+  if (mediaType !== "image") {
+    return [];
+  }
+  const selectedEntries = getWorkbenchSelectedImageEntries();
+  const inputEntries = selectedEntries.length ? selectedEntries : [primaryMedia];
+  const ordered = [];
+  const seen = new Set();
+  const pushAsset = (media) => {
+    if (!media || String(media.media_type || "").toLowerCase() !== "image") return;
+    const mediaId = String(media.media_id || media.name || "").trim();
+    if (!mediaId || seen.has(mediaId)) return;
+    seen.add(mediaId);
+    ordered.push({
+      mediaId,
+      mediaName: String(media.name || media.media_id || "未命名图片"),
+      mediaIndex: Number.isInteger(Number(media.media_index)) ? Number(media.media_index) : null,
+      previewUrl: String(media.preview_url || ""),
+    });
+  };
+  inputEntries.forEach((media) => pushAsset(media));
+  return ordered.slice(0, WORKBENCH_IMAGE_SELECTION_LIMIT);
+}
+
+function getDerivedMentionedSlots(promptText = "") {
+  const matches = String(promptText || "").match(/@(?<slot>image_[1-5])\b/gi) || [];
+  return new Set(
+    matches
+      .map((match) => String(match || "").trim().replace(/^@/, "").toLowerCase())
+      .filter(Boolean)
+  );
+}
+
+function buildDerivedReferenceAssetsPayload(promptText = "") {
+  const mentionedSlots = getDerivedMentionedSlots(promptText);
+  return (Array.isArray(STATE.derivedModal.sourceAssets) ? STATE.derivedModal.sourceAssets : [])
+    .map((asset, index) => {
+      const slot = getDerivedReferenceSlot(index);
+      return {
+        media_id: String(asset.mediaId || "").trim(),
+        kind: "image",
+        mode: mentionedSlots.has(slot.toLowerCase()) ? "mention" : "attach",
+        slot,
+        reference_texts: [slot, String(asset.mediaName || "").trim()].filter(Boolean),
+      };
+    })
+    .filter((asset) => asset.media_id);
+}
+
+function getDerivedPromptInputElement() {
+  return document.getElementById("derivedPromptInput");
+}
+
+function getDerivedPromptMentionPopoverElement() {
+  return document.getElementById("derivedPromptMentionPopover");
+}
+
+function hideDerivedPromptMentionPopover() {
+  const popover = getDerivedPromptMentionPopoverElement();
+  if (!popover) return;
+  popover.classList.add("hidden");
+  popover.innerHTML = "";
+  STATE.derivedModal.mentionActiveIndex = 0;
+}
+
+function getDerivedPromptMentionContext() {
+  const textarea = getDerivedPromptInputElement();
+  if (!textarea) return null;
+  const value = String(textarea.value || "");
+  const cursor = Number.isInteger(textarea.selectionStart) ? textarea.selectionStart : value.length;
+  const beforeCursor = value.slice(0, cursor);
+  const triggerIndex = beforeCursor.lastIndexOf("@");
+  if (triggerIndex < 0) return null;
+  const query = beforeCursor.slice(triggerIndex + 1);
+  if (/[\s\n]/.test(query)) return null;
+  const beforeTrigger = beforeCursor.slice(0, triggerIndex);
+  if (beforeTrigger && /[A-Za-z0-9_]/.test(beforeTrigger.slice(-1))) return null;
+  return {
+    triggerIndex,
+    cursor,
+    query: query.toLowerCase(),
+  };
+}
+
+function getDerivedPromptMentionCandidates(query = "") {
+  const normalized = String(query || "").trim().toLowerCase();
+  return (Array.isArray(STATE.derivedModal.sourceAssets) ? STATE.derivedModal.sourceAssets : [])
+    .map((asset, index) => ({
+      ...asset,
+      slot: getDerivedReferenceSlot(index),
+      index,
+    }))
+    .filter((asset) => {
+      if (!normalized) return true;
+      const searchText = [
+        asset.slot,
+        asset.mediaName,
+        asset.mediaId,
+        asset.mediaIndex !== null ? `#${asset.mediaIndex}` : "",
+      ].join(" ").toLowerCase();
+      return searchText.includes(normalized);
+    });
+}
+
+function insertDerivedPromptMentionByIndex(index) {
+  const candidates = getDerivedPromptMentionCandidates(getDerivedPromptMentionContext()?.query || "");
+  const candidate = candidates[index];
+  const textarea = getDerivedPromptInputElement();
+  const context = getDerivedPromptMentionContext();
+  if (!candidate || !textarea || !context) return;
+  const value = String(textarea.value || "");
+  const insertion = `@${candidate.slot} `;
+  const nextValue = value.slice(0, context.triggerIndex) + insertion + value.slice(context.cursor);
+  textarea.value = nextValue;
+  const nextCursor = context.triggerIndex + insertion.length;
+  textarea.focus();
+  textarea.setSelectionRange(nextCursor, nextCursor);
+  hideDerivedPromptMentionPopover();
+  renderDerivedReferenceAssets();
+  syncDerivedActionButton({ syncPreview: false, restartPreview: false });
+}
+
+function renderDerivedPromptMentionPopover() {
+  const popover = getDerivedPromptMentionPopoverElement();
+  const textarea = getDerivedPromptInputElement();
+  if (!popover || !textarea || !STATE.derivedModal.open || String(STATE.derivedModal.mediaType || "") !== "image") {
+    hideDerivedPromptMentionPopover();
+    return;
+  }
+  const context = getDerivedPromptMentionContext();
+  if (!context) {
+    hideDerivedPromptMentionPopover();
+    return;
+  }
+  const candidates = getDerivedPromptMentionCandidates(context.query);
+  const activeIndex = Math.min(
+    Math.max(Number(STATE.derivedModal.mentionActiveIndex || 0), 0),
+    Math.max(candidates.length - 1, 0)
+  );
+  STATE.derivedModal.mentionActiveIndex = activeIndex;
+  if (!candidates.length) {
+    popover.innerHTML = '<div class="derived-mention-empty">没有匹配的参考图。继续输入可缩小范围，或返回重新选择图片。</div>';
+    popover.classList.remove("hidden");
+    return;
+  }
+  const list = document.createElement("div");
+  list.className = "derived-mention-list";
+  candidates.forEach((asset, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `derived-mention-item${index === activeIndex ? " active" : ""}`;
+    button.innerHTML = `
+      <div class="derived-mention-thumb">${asset.previewUrl ? `<img src="${escapeHtml(asset.previewUrl)}" alt="${escapeHtml(asset.mediaName || asset.slot)}">` : "图片"}</div>
+      <div class="derived-mention-main">
+        <div class="derived-mention-title">
+          <span class="derived-reference-slot">${escapeHtml(asset.slot)}</span>
+          <span class="derived-mention-name">${escapeHtml(asset.mediaName || asset.mediaId || "未命名图片")}</span>
+        </div>
+        <div class="derived-mention-meta">
+          ${asset.mediaIndex !== null ? `<span>#${escapeHtml(String(asset.mediaIndex))}</span>` : ""}
+          ${asset.mediaId ? `<span>${escapeHtml(asset.mediaId)}</span>` : ""}
+        </div>
+      </div>
+    `;
+    button.onmousedown = (event) => {
+      event.preventDefault();
+    };
+    button.onclick = () => insertDerivedPromptMentionByIndex(index);
+    list.appendChild(button);
+  });
+  popover.innerHTML = "";
+  popover.appendChild(list);
+  popover.classList.remove("hidden");
+}
+
 function getWorkbenchSelectedToken() {
   return STATE.upstreamTokens.find(item => Number(item.id || 0) === Number(STATE.selectedWorkbenchTokenId || 0)) || null;
 }
@@ -1498,6 +1985,7 @@ function syncDerivedActionButton(options = {}) {
   const previewEls = getDerivedClipPreviewElements();
   const promptValue = String(document.getElementById("derivedPromptInput")?.value || "").trim();
   const meta = STATE.derivedModal.selectedModel ? getModelMeta(STATE.derivedModal.selectedModel) : null;
+  const sourceAssets = Array.isArray(STATE.derivedModal.sourceAssets) ? STATE.derivedModal.sourceAssets : [];
   if (!meta) {
     modelName.textContent = "请选择模型";
     modelInfo.textContent = "先选模型，再拖动时间轴调整片段。";
@@ -1511,9 +1999,16 @@ function syncDerivedActionButton(options = {}) {
     return;
   }
   modelName.textContent = STATE.derivedModal.selectedModel;
+  const imageCountValid = STATE.derivedModal.mediaType === "image" && meta.supportsImages
+    ? sourceAssets.length >= meta.minImages && sourceAssets.length <= meta.maxImages
+    : true;
   modelInfo.textContent = meta.requiresFrameRange
     ? "拖动时间轴后直接预览当前片段。"
-    : (ALL_MODELS[STATE.derivedModal.selectedModel] || "");
+    : (
+      STATE.derivedModal.mediaType === "image" && meta.supportsImages
+        ? `当前已选 ${sourceAssets.length} 张图；该模型支持 ${meta.minImages}-${meta.maxImages} 张。输入 @ 可唤起引用选择，未被引用的图会自动作为附加参考上传。`
+        : (ALL_MODELS[STATE.derivedModal.selectedModel] || "")
+    );
   editRangeGroup.style.display = meta.requiresFrameRange ? "block" : "none";
   if (syncPreview) {
     mountDerivedClipPreview();
@@ -1525,14 +2020,86 @@ function syncDerivedActionButton(options = {}) {
     }
   }
   const promptReady = promptValue.length > 0;
-  btn.disabled = !!STATE.derivedModal.generating || !promptReady;
+  btn.disabled = !!STATE.derivedModal.generating || !promptReady || !imageCountValid;
   if (STATE.derivedModal.generating) {
     btn.textContent = meta.requiresFrameRange ? "⏳ 编辑中..." : "⏳ 生成中...";
+  } else if (!imageCountValid) {
+    btn.textContent = `当前模型需要 ${meta.minImages}-${meta.maxImages} 张图片`;
   } else if (!promptReady) {
     btn.textContent = meta.requiresFrameRange ? "请先输入编辑提示词" : "请先输入提示词";
   } else {
     btn.textContent = meta.requiresFrameRange ? "🎬 基于该视频编辑" : "🎬 基于该媒体生成";
   }
+}
+
+function renderDerivedReferenceAssets() {
+  const group = document.getElementById("derivedReferenceAssetsGroup");
+  const list = document.getElementById("derivedReferenceAssetsList");
+  const hint = document.getElementById("derivedReferenceAssetsHint");
+  if (!group || !list || !hint) return;
+  const assets = Array.isArray(STATE.derivedModal.sourceAssets) ? STATE.derivedModal.sourceAssets : [];
+  const promptValue = String(getDerivedPromptInputElement()?.value || "");
+  const mentionedSlots = getDerivedMentionedSlots(promptValue);
+  const isImageContext = String(STATE.derivedModal.mediaType || "").toLowerCase() === "image";
+  group.style.display = isImageContext ? "block" : "none";
+  if (!isImageContext) {
+    list.innerHTML = "";
+    hint.textContent = "";
+    return;
+  }
+  if (!assets.length) {
+    list.innerHTML = '<div class="selector-empty">当前没有可用参考图，请返回媒体工作台重新选择图片。</div>';
+    hint.textContent = "图片模式下至少需要保留一张参考图。";
+    return;
+  }
+  list.innerHTML = "";
+  assets.forEach((asset, index) => {
+    const slot = getDerivedReferenceSlot(index);
+    const isMentioned = mentionedSlots.has(slot.toLowerCase());
+    const row = document.createElement("div");
+    row.className = `derived-reference-item${isMentioned ? " is-mentioned" : ""}`;
+    row.innerHTML = `
+      <div class="derived-reference-thumb">
+        ${asset.previewUrl ? `<img src="${escapeHtml(asset.previewUrl)}" alt="${escapeHtml(asset.mediaName || slot)}">` : "图片"}
+      </div>
+      <div class="derived-reference-item-main">
+        <div class="derived-reference-item-title">
+          <span class="derived-reference-slot">${escapeHtml(slot)}</span>
+          <span class="derived-reference-name">${escapeHtml(asset.mediaName || asset.mediaId || "未命名图片")}</span>
+          <span class="derived-reference-state ${isMentioned ? "is-mentioned" : "is-attach"}">${isMentioned ? "已引用" : "仅附加"}</span>
+        </div>
+        <div class="derived-reference-meta">
+          ${asset.mediaIndex !== null ? `<span>#${escapeHtml(String(asset.mediaIndex))}</span>` : ""}
+          ${asset.mediaId ? `<span>mediaId: ${escapeHtml(asset.mediaId)}</span>` : ""}
+        </div>
+      </div>
+      <div class="derived-reference-actions">
+        <button type="button" class="derived-reference-insert-btn" data-derived-mention-index="${index}">插入 @${escapeHtml(slot)}</button>
+      </div>
+    `;
+    const insertButton = row.querySelector("[data-derived-mention-index]");
+    if (insertButton) {
+      insertButton.onclick = () => {
+        const textarea = getDerivedPromptInputElement();
+        if (!textarea) return;
+        const token = `@${slot}`;
+        const existingValue = String(textarea.value || "");
+        const nextValue = existingValue.includes(token)
+          ? existingValue
+          : `${existingValue}${existingValue && !/\s$/.test(existingValue) ? " " : ""}${token} `;
+        textarea.value = nextValue;
+        textarea.focus();
+        textarea.setSelectionRange(nextValue.length, nextValue.length);
+        renderDerivedReferenceAssets();
+        renderDerivedPromptMentionPopover();
+        syncDerivedActionButton({ syncPreview: false, restartPreview: false });
+      };
+    }
+    list.appendChild(row);
+  });
+  hint.textContent = assets.length > 1
+    ? "引用状态由提示词里的 @image_n 自动决定。输入 @ 可唤起选择层；没写进提示词的图会继续作为附加参考一起上传。"
+    : "单图场景也一样：写了 @image_1 就是引用，没写则只是附加参考。";
 }
 
 function renderDerivedModelPicker() {
@@ -1639,6 +2206,7 @@ function renderDerivedModelPicker() {
 }
 
 function openDerivedModal(tokenInfo, media) {
+  const derivedSourceAssets = buildDerivedSourceAssets(media);
   STATE.derivedModal = {
     open: true,
     tokenId: Number(STATE.selectedWorkbenchTokenId || 0),
@@ -1650,6 +2218,7 @@ function openDerivedModal(tokenInfo, media) {
     mediaName: String(media.name || media.media_id || ""),
     mediaType: String(media.media_type || "").toLowerCase(),
     previewUrl: String(media.preview_url || ""),
+    sourceAssets: derivedSourceAssets,
     selectedModel: "",
     activeOperation: "",
     activeModelFamily: "",
@@ -1658,6 +2227,7 @@ function openDerivedModal(tokenInfo, media) {
     videoMaxSeconds: DEFAULT_VIDEO_EDIT_END_SECONDS,
     segmentPreviewActive: false,
     rangeControlsBound: STATE.derivedModal.rangeControlsBound === true,
+    mentionActiveIndex: 0,
   };
 
   const operationChoices = getDerivedOperationChoices(STATE.derivedModal.mediaType);
@@ -1669,17 +2239,29 @@ function openDerivedModal(tokenInfo, media) {
   document.getElementById("derivedRequestMeta").textContent = "当前派生任务尚未开始。";
   document.getElementById("derivedOutputLog").textContent = "已锁定媒体上下文，请选择模型后开始生成。";
   document.getElementById("derivedOutputResult").innerHTML = "";
-  document.getElementById("derivedModalTitle").textContent = STATE.derivedModal.mediaType === "image" ? "基于图片继续生成" : "基于视频继续编辑/生成";
-  document.getElementById("derivedModalSubtitle").textContent = "拖动片段范围，直接预览并提交编辑";
+  document.getElementById("derivedModalTitle").textContent = STATE.derivedModal.mediaType === "image"
+    ? `基于图片继续生成${derivedSourceAssets.length > 1 ? ` (${derivedSourceAssets.length} 张)` : ""}`
+    : "基于视频继续编辑/生成";
+  document.getElementById("derivedModalSubtitle").textContent = STATE.derivedModal.mediaType === "image"
+    ? "已选图片会一起带入；在提示词里输入 @ 可唤起引用选择，未引用的图会自动作为附加参考。"
+    : "拖动片段范围，直接预览并提交编辑";
   const sourceChip = document.getElementById("derivedSourceChip");
   if (sourceChip) {
-    const shortMediaId = STATE.derivedModal.mediaId
-      ? `${STATE.derivedModal.mediaId.slice(0, 8)}...${STATE.derivedModal.mediaId.slice(-4)}`
-      : "未命名视频";
-    sourceChip.textContent = STATE.derivedModal.mediaIndex !== null
-      ? `#${STATE.derivedModal.mediaIndex} / ${shortMediaId}`
-      : shortMediaId;
+    if (STATE.derivedModal.mediaType === "image") {
+      sourceChip.textContent = derivedSourceAssets.length > 1
+        ? `已选 ${derivedSourceAssets.length} 张图片`
+        : "1 张图片";
+    } else {
+      const shortMediaId = STATE.derivedModal.mediaId
+        ? `${STATE.derivedModal.mediaId.slice(0, 8)}...${STATE.derivedModal.mediaId.slice(-4)}`
+        : "未命名视频";
+      sourceChip.textContent = STATE.derivedModal.mediaIndex !== null
+        ? `#${STATE.derivedModal.mediaIndex} / ${shortMediaId}`
+        : shortMediaId;
+    }
   }
+  renderDerivedReferenceAssets();
+  hideDerivedPromptMentionPopover();
   bindDerivedEditRangeControls();
   resetDerivedEditRangeForCurrentMedia();
   mountDerivedClipPreview();
@@ -1690,6 +2272,7 @@ function openDerivedModal(tokenInfo, media) {
 function closeDerivedModal() {
   stopDerivedSegmentPreview({ pauseVideo: true, resetTime: false, statusText: "未预览" });
   STATE.derivedModal.open = false;
+  hideDerivedPromptMentionPopover();
   document.getElementById("derivedModal").classList.add("hidden");
 }
 
@@ -1837,14 +2420,42 @@ function renderWorkbenchPreview() {
   const projectInfo = findWorkbenchProject(STATE.selectedWorkbenchTokenId, STATE.selectedWorkbenchProjectId)
     || getWorkbenchMediaBucket(STATE.selectedWorkbenchTokenId, STATE.selectedWorkbenchProjectId).project
     || {};
-  const actionLabel = mediaType === "image" ? "基于此图继续生成" : "基于此视频继续操作";
-  const previewBox = previewUrl
+  const selectedImageEntries = getWorkbenchSelectedImageEntries();
+  const launchImageEntries = mediaType === "image"
+    ? ((selectedImageEntries.length ? selectedImageEntries : [media]).filter(Boolean))
+    : [];
+  const actionLabel = mediaType === "image"
+    ? (launchImageEntries.length > 1 ? `基于已选 ${launchImageEntries.length} 张图继续生成` : "基于此图继续生成")
+    : "基于此视频继续操作";
+  const shouldShowLargePreview = !(mediaType === "image" && launchImageEntries.length > 1);
+  const selectedPreviewGallery = mediaType === "image" && launchImageEntries.length > 1
+    ? `
+      <div class="preview-selected-gallery">
+        ${launchImageEntries.map((entry) => {
+          const entryName = String(entry.media_id || entry.name || "");
+          const isActive = entryName === String(STATE.selectedWorkbenchMediaName || "");
+          return `
+            <button type="button" class="preview-selected-item${isActive ? " active" : ""}" data-preview-media-name="${escapeHtml(entryName)}">
+              <div class="preview-selected-thumb">${entry.preview_url ? `<img src="${escapeHtml(entry.preview_url)}" alt="${escapeHtml(entry.name || entryName)}">` : "无预览"}</div>
+              <div class="preview-selected-meta">
+                <div class="preview-selected-name">${escapeHtml(entry.name || entryName || "未命名图片")}</div>
+                <div class="preview-selected-sub">${entry.media_index !== undefined && entry.media_index !== null ? `#${escapeHtml(String(entry.media_index))}` : "已选参考图"}</div>
+              </div>
+            </button>
+          `;
+        }).join("")}
+      </div>
+    `
+    : "";
+  const previewBox = shouldShowLargePreview && previewUrl
     ? (mediaType === "video"
       ? `<video src="${escapeHtml(previewUrl)}" controls preload="metadata"></video>`
       : `<img src="${escapeHtml(previewUrl)}" alt="${escapeHtml(media.name || "media")}">`)
-    : (isResolvingPreview
+    : (shouldShowLargePreview && isResolvingPreview
       ? '<div class="preview-empty">正在解析上游媒体预览地址...</div>'
-      : `<div class="preview-empty">该媒体当前没有可直接预览的 URL，可先使用 media name / media id 继续流转。${media.preview_error ? `<br>解析失败: ${escapeHtml(media.preview_error)}` : ""}</div>`);
+      : (shouldShowLargePreview
+        ? `<div class="preview-empty">该媒体当前没有可直接预览的 URL，可先使用 media name / media id 继续流转。${media.preview_error ? `<br>解析失败: ${escapeHtml(media.preview_error)}` : ""}</div>`
+        : ""));
 
   setWorkbenchPreviewHtml(`
     <div class="preview-title">${escapeHtml(media.name || "未命名媒体")}</div>
@@ -1857,16 +2468,20 @@ function renderWorkbenchPreview() {
       ${media.create_time ? `<span>创建: ${escapeHtml(media.create_time)}</span>` : ""}
       ${(media.width && media.height) ? `<span>尺寸: ${escapeHtml(`${media.width}x${media.height}`)}</span>` : ""}
     </div>
-    <div class="preview-box">${previewBox}</div>
+    ${selectedPreviewGallery}
+    ${shouldShowLargePreview ? `<div class="preview-box">${previewBox}</div>` : ""}
     <div class="preview-actions">
       <button type="button" class="btn-secondary" id="btnUseWorkbenchMedia">${actionLabel}</button>
-      ${previewUrl ? `<a class="media-link" href="${escapeHtml(previewUrl)}" target="_blank" rel="noreferrer">打开原始媒体</a>` : ""}
     </div>
-    <div class="form-hint">${mediaType === "image"
-      ? "会打开一个新的派生生成弹窗。你在弹窗里选择模型并开始生成，且会固定沿用该图片所属 token / project / mediaId。"
-      : "会打开一个新的派生生成弹窗。你在弹窗里选择编辑或续写模型并开始生成，且会固定沿用该视频所属 token / project / mediaId。"}</div>
   `);
 
+  document.querySelectorAll("[data-preview-media-name]").forEach((button) => {
+    button.onclick = () => {
+      STATE.selectedWorkbenchMediaName = String(button.getAttribute("data-preview-media-name") || "");
+      renderWorkbenchTokens();
+      renderWorkbenchPreview();
+    };
+  });
   const btn = document.getElementById("btnUseWorkbenchMedia");
   if (btn) {
     btn.onclick = () => {
@@ -1969,6 +2584,7 @@ function renderWorkbenchTokens() {
         STATE.selectedWorkbenchTokenId = Number(selectedToken && selectedToken.id || 0);
         STATE.selectedWorkbenchProjectId = projectId;
         STATE.selectedWorkbenchMediaName = "";
+    STATE.selectedWorkbenchImageNames = [];
         renderWorkbenchTokens();
         renderWorkbenchPreview();
         await ensureWorkbenchProjectMediaLoaded(selectedToken, project);
@@ -2005,6 +2621,11 @@ function renderWorkbenchTokens() {
       if (STATE.selectedWorkbenchMediaName === mediaName) {
         row.classList.add("active");
       }
+      const isImage = String(entry.media_type || "").toLowerCase() === "image";
+      const isSelected = isImage && isWorkbenchImageSelected(mediaName);
+      if (isSelected) {
+        row.classList.add("selected");
+      }
       row.innerHTML = `
         <div class="media-thumb">${thumb}</div>
         <div class="media-main">
@@ -2017,7 +2638,19 @@ function renderWorkbenchTokens() {
             ${(entry.width && entry.height) ? `<span>${escapeHtml(`${entry.width}x${entry.height}`)}</span>` : ""}
           </div>
         </div>
+        <div class="media-item-actions">
+          ${isImage ? `<button type="button" class="media-pick-btn${isSelected ? " active" : ""}" data-media-action="toggle-select">${isSelected ? "已加入" : "加入素材"}</button>` : ""}
+        </div>
       `;
+      const toggleBtn = row.querySelector('[data-media-action="toggle-select"]');
+      if (toggleBtn) {
+        toggleBtn.onclick = (event) => {
+          event.stopPropagation();
+          toggleWorkbenchImageSelection(entry);
+          renderWorkbenchTokens();
+          renderWorkbenchPreview();
+        };
+      }
       row.onclick = () => {
         STATE.selectedWorkbenchMediaName = mediaName;
         renderWorkbenchTokens();
@@ -2130,6 +2763,12 @@ async function ensureWorkbenchProjectMediaLoaded(tokenItem, projectInfo) {
     ) {
       STATE.selectedWorkbenchMediaName = String((data.media[0] || {}).media_id || (data.media[0] || {}).name || "");
     }
+    const availableImageNames = new Set(
+      (Array.isArray(data.media) ? data.media : [])
+        .filter((item) => String(item.media_type || "").toLowerCase() === "image")
+        .map((item) => String(item.media_id || item.name || ""))
+    );
+    STATE.selectedWorkbenchImageNames = getWorkbenchSelectedImageNames().filter((mediaName) => availableImageNames.has(mediaName));
   } catch (e) {
     STATE.upstreamMediaByProject[key] = {
       loading: false,
@@ -2182,6 +2821,7 @@ async function refreshWorkbenchTokens() {
     STATE.selectedWorkbenchTokenId = 0;
     STATE.selectedWorkbenchProjectId = "";
     STATE.selectedWorkbenchMediaName = "";
+    STATE.selectedWorkbenchImageNames = [];
     STATE.workbenchUploadFile = null;
     STATE.workbenchUploadBusy = false;
     setWorkbenchUploadStatus("");
@@ -2586,7 +3226,43 @@ document.getElementById("tabHistory").onclick = async () => {
 };
 document.getElementById("btnCloseDerivedModal").onclick = closeDerivedModal;
 document.getElementById("derivedPromptInput").addEventListener("input", () => {
+  STATE.derivedModal.mentionActiveIndex = 0;
+  renderDerivedReferenceAssets();
+  renderDerivedPromptMentionPopover();
   syncDerivedActionButton({ syncPreview: false, restartPreview: false });
+});
+document.getElementById("derivedPromptInput").addEventListener("click", () => {
+  renderDerivedPromptMentionPopover();
+  renderDerivedReferenceAssets();
+});
+document.getElementById("derivedPromptInput").addEventListener("keydown", (event) => {
+  const popover = getDerivedPromptMentionPopoverElement();
+  if (!popover || popover.classList.contains("hidden")) return;
+  const candidates = getDerivedPromptMentionCandidates(getDerivedPromptMentionContext()?.query || "");
+  if (!candidates.length) {
+    if (event.key === "Escape") {
+      hideDerivedPromptMentionPopover();
+    }
+    return;
+  }
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    STATE.derivedModal.mentionActiveIndex = (Number(STATE.derivedModal.mentionActiveIndex || 0) + 1) % candidates.length;
+    renderDerivedPromptMentionPopover();
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    STATE.derivedModal.mentionActiveIndex = (Number(STATE.derivedModal.mentionActiveIndex || 0) - 1 + candidates.length) % candidates.length;
+    renderDerivedPromptMentionPopover();
+  } else if (event.key === "Enter" || event.key === "Tab") {
+    event.preventDefault();
+    insertDerivedPromptMentionByIndex(Number(STATE.derivedModal.mentionActiveIndex || 0));
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    hideDerivedPromptMentionPopover();
+  }
+});
+document.getElementById("derivedPromptInput").addEventListener("blur", () => {
+  window.setTimeout(() => hideDerivedPromptMentionPopover(), 120);
 });
 document.getElementById("derivedModal").onclick = (e) => {
   if (e.target.id === "derivedModal") closeDerivedModal();
@@ -2794,11 +3470,28 @@ async function submitDerivedGeneration() {
   const editEndFrame = (document.getElementById("derivedEditEndFrameInput").value || "").trim();
   const sourceDurationSeconds = Number(STATE.derivedModal.videoDurationSeconds || 0);
   const meta = getModelMeta(STATE.derivedModal.selectedModel);
+  const derivedReferenceAssets = buildDerivedReferenceAssetsPayload(prompt);
+  const derivedImageMediaIds = derivedReferenceAssets
+    .map((asset) => String(asset.media_id || "").trim())
+    .filter(Boolean);
+  const mentionedSlots = derivedReferenceAssets
+    .filter((asset) => String(asset.mode || "") === "mention")
+    .map((asset) => `@${asset.slot}`);
 
   if (!prompt) { alert("请输入提示词"); return; }
   if (!apiKey) { alert("请输入 API Key"); return; }
   if (!baseUrl) { alert("请输入服务地址"); return; }
   if (!STATE.derivedModal.mediaId) { alert("当前媒体缺少 mediaId"); return; }
+  if (STATE.derivedModal.mediaType === "image" && meta.supportsImages) {
+    if (!derivedImageMediaIds.length) {
+      alert("当前没有可用参考图，请先在媒体工作台选择图片");
+      return;
+    }
+    if (derivedImageMediaIds.length < meta.minImages || derivedImageMediaIds.length > meta.maxImages) {
+      alert(`当前模型需要 ${meta.minImages}-${meta.maxImages} 张图片，当前已选 ${derivedImageMediaIds.length} 张`);
+      return;
+    }
+  }
   if (meta.requiresFrameRange) {
     if (editStartFrame === "" || editEndFrame === "") {
       alert("请填写开始时间和结束时间");
@@ -2821,16 +3514,13 @@ async function submitDerivedGeneration() {
   statusText.textContent = "生成中...";
   log.textContent = "";
   result.innerHTML = "";
-  requestMeta.textContent = `固定来源: ${STATE.derivedModal.tokenEmail || `ID:${STATE.derivedModal.tokenId}`} | project=${STATE.derivedModal.projectId} | media=${STATE.derivedModal.mediaId} | index=${STATE.derivedModal.mediaIndex ?? "-"}`;
+  requestMeta.textContent = `固定来源: ${STATE.derivedModal.tokenEmail || `ID:${STATE.derivedModal.tokenId}`} | project=${STATE.derivedModal.projectId} | media=${STATE.derivedModal.mediaId}${derivedImageMediaIds.length ? ` | refs=${derivedImageMediaIds.length}` : ""}`;
   const appendLog = (text) => { log.textContent += text; log.scrollTop = log.scrollHeight; };
 
   const content = [{ type: "text", text: prompt }];
   if (meta.requiresVideoId) {
-    const selectedMaterialIndexQuery = STATE.derivedModal.mediaIndex !== null
-      ? `&selected_material_index=${encodeURIComponent(STATE.derivedModal.mediaIndex)}`
-      : "";
     const videoRefUrl = meta.requiresFrameRange
-      ? `edit://${STATE.derivedModal.mediaId}?start_time=${encodeURIComponent(editStartFrame)}&end_time=${encodeURIComponent(editEndFrame)}&source_duration=${encodeURIComponent(sourceDurationSeconds || "")}${selectedMaterialIndexQuery}`
+      ? `edit://${STATE.derivedModal.mediaId}?start_time=${encodeURIComponent(editStartFrame)}&end_time=${encodeURIComponent(editEndFrame)}&source_duration=${encodeURIComponent(sourceDurationSeconds || "")}`
       : `extend://${STATE.derivedModal.mediaId}`;
     content.push({ type: "image_url", image_url: { url: videoRefUrl } });
   }
@@ -2843,7 +3533,8 @@ async function submitDerivedGeneration() {
     preferred_project_id: STATE.derivedModal.projectId,
   };
   if (STATE.derivedModal.mediaType === "image" && meta.supportsImages) {
-    body.source_image_media_ids = [STATE.derivedModal.mediaId];
+    body.source_image_media_ids = derivedImageMediaIds;
+    body.reference_assets = derivedReferenceAssets;
   }
 
   const startTime = Date.now();
@@ -2851,7 +3542,10 @@ async function submitDerivedGeneration() {
   appendLog(`[${new Date().toLocaleTimeString()}] Token: ${STATE.derivedModal.tokenEmail || STATE.derivedModal.tokenId}\n`);
   appendLog(`[${new Date().toLocaleTimeString()}] Project: ${STATE.derivedModal.projectId}\n`);
   appendLog(`[${new Date().toLocaleTimeString()}] Media ID: ${STATE.derivedModal.mediaId}\n`);
-  appendLog(`[${new Date().toLocaleTimeString()}] Material Index: ${STATE.derivedModal.mediaIndex ?? "-"}\n`);
+  if (derivedReferenceAssets.length) {
+    appendLog(`[${new Date().toLocaleTimeString()}] 参考图: ${derivedReferenceAssets.map((asset) => `${asset.slot}/${asset.mode}`).join(", ")}\n`);
+    appendLog(`[${new Date().toLocaleTimeString()}] Prompt 引用: ${mentionedSlots.length ? mentionedSlots.join(", ") : "无"}\n`);
+  }
   if (meta.requiresFrameRange) {
     appendLog(`[${new Date().toLocaleTimeString()}] 编辑时间范围: ${formatTimelineTime(editStartFrame)} - ${formatTimelineTime(editEndFrame)}\n`);
   }

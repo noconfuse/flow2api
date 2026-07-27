@@ -299,9 +299,6 @@ function jobRequiresCanonicalProjectPage(jobType = "") {
         "ensure_project_page",
         "video_ui_probe",
         "video_ui_prepare",
-        "video_ui_submit_probe",
-        "video_ui_type_probe",
-        "video_ui_submit",
         "video_submode_probe",
         "video_ui_workflow",
     ].includes(String(jobType || "").trim());
@@ -1897,11 +1894,15 @@ async function runVideoSubmodeProbe(tabId, jobPayload) {
 
 async function runVideoUiPrepare(tabId, jobPayload) {
     const promptText = String(jobPayload?.prompt || "").trim();
+    const probeMode = String(jobPayload?.probe_mode || "").trim().toLowerCase();
+    const probeWaitMs = Math.max(0, Math.min(20000, Number(jobPayload?.probe_wait_ms || 8000) || 8000));
+    const preservePrompt = Boolean(jobPayload?.preserve_prompt);
     const results = await chrome.scripting.executeScript({
         target: { tabId },
         world: "MAIN",
-        args: [promptText],
-        func: async (promptValue) => {
+        args: [promptText, probeMode, probeWaitMs, preservePrompt],
+        func: async (promptValue, probeModeValue, probeWaitMsValue, preservePromptValue) => {
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
             const visible = (el) => {
                 if (!el) return false;
                 const rect = el.getBoundingClientRect();
@@ -2006,6 +2007,34 @@ async function runVideoUiPrepare(tabId, jobPayload) {
                     target.dispatchEvent(new Event(type, { bubbles: true }));
                 }
             };
+            const createInputEvent = (type, data) => {
+                try {
+                    return new InputEvent(type, {
+                        bubbles: true,
+                        cancelable: true,
+                        data,
+                        inputType: "insertText",
+                    });
+                } catch (_error) {
+                    return new Event(type, { bubbles: true, cancelable: true });
+                }
+            };
+            const summarizeSelection = () => {
+                const selection = window.getSelection();
+                if (!selection) return null;
+                const anchorNode = selection.anchorNode;
+                const focusNode = selection.focusNode;
+                return {
+                    range_count: Number(selection.rangeCount || 0),
+                    is_collapsed: !!selection.isCollapsed,
+                    anchor_offset: Number(selection.anchorOffset || 0),
+                    focus_offset: Number(selection.focusOffset || 0),
+                    anchor_text: String(anchorNode?.textContent || "").slice(0, 80),
+                    focus_text: String(focusNode?.textContent || "").slice(0, 80),
+                    anchor_parent: String(anchorNode?.parentElement?.tagName || "").toLowerCase(),
+                    focus_parent: String(focusNode?.parentElement?.tagName || "").toLowerCase(),
+                };
+            };
             const placeCaretAtEnd = (target) => {
                 if (!target) return;
                 const selection = window.getSelection();
@@ -2079,6 +2108,257 @@ async function runVideoUiPrepare(tabId, jobPayload) {
                 target.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
                 return true;
             };
+            const collectMentionOverlayEvidence = () => {
+                const nodes = Array.from(
+                    document.querySelectorAll("[role='dialog'], dialog, [aria-modal='true'], [role='listbox'], [role='menu']")
+                )
+                    .filter((node) => visible(node))
+                    .map((node) => ({
+                        tag: String(node.tagName || "").toLowerCase(),
+                        role: String(node.getAttribute?.("role") || ""),
+                        aria_label: String(node.getAttribute?.("aria-label") || ""),
+                        text: textOf(node).slice(0, 200),
+                    }));
+                const mentionLikeNodes = nodes.filter((entry) => {
+                    const raw = `${entry.role} ${entry.aria_label} ${entry.text}`.toLowerCase();
+                    return (
+                        raw.includes("添加到提示") ||
+                        raw.includes("add to prompt") ||
+                        raw.includes("媒体") ||
+                        raw.includes("media") ||
+                        raw.includes("image") ||
+                        raw.includes("video")
+                    );
+                });
+                return {
+                    overlay_count: nodes.length,
+                    mention_like_count: mentionLikeNodes.length,
+                    mention_like_samples: mentionLikeNodes.slice(0, 4),
+                    active_element: summarizeElement(document.activeElement),
+                };
+            };
+            const installPromptEventProbe = (target) => {
+                const events = [];
+                const pushEvent = (type, event, extra = {}) => {
+                    if (events.length >= 80) {
+                        events.shift();
+                    }
+                    events.push({
+                        type,
+                        key: String(event?.key || ""),
+                        code: String(event?.code || ""),
+                        data: String(event?.data || ""),
+                        input_type: String(event?.inputType || ""),
+                        is_trusted: typeof event?.isTrusted === "boolean" ? event.isTrusted : null,
+                        is_composing: typeof event?.isComposing === "boolean" ? event.isComposing : null,
+                        shift_key: typeof event?.shiftKey === "boolean" ? event.shiftKey : null,
+                        target_tag: String(event?.target?.tagName || "").toLowerCase(),
+                        target_role: String(event?.target?.getAttribute?.("role") || ""),
+                        prompt_text: textOf(target).slice(0, 120),
+                        selection: summarizeSelection(),
+                        mention_ui: collectMentionOverlayEvidence(),
+                        ...extra,
+                    });
+                };
+                const onTargetEvent = (event) => {
+                    pushEvent(String(event?.type || "unknown"), event);
+                };
+                const onSelectionChange = () => {
+                    if (document.activeElement !== target && !(target instanceof Element && target.contains(document.activeElement))) {
+                        return;
+                    }
+                    pushEvent("selectionchange", null, {
+                        prompt_text: textOf(target).slice(0, 120),
+                        selection: summarizeSelection(),
+                    });
+                };
+                const eventTypes = [
+                    "keydown",
+                    "keypress",
+                    "beforeinput",
+                    "input",
+                    "keyup",
+                    "compositionstart",
+                    "compositionupdate",
+                    "compositionend",
+                    "paste",
+                ];
+                for (const eventType of eventTypes) {
+                    target.addEventListener(eventType, onTargetEvent, true);
+                }
+                document.addEventListener("selectionchange", onSelectionChange, true);
+                return {
+                    events,
+                    stop() {
+                        for (const eventType of eventTypes) {
+                            target.removeEventListener(eventType, onTargetEvent, true);
+                        }
+                        document.removeEventListener("selectionchange", onSelectionChange, true);
+                    },
+                };
+            };
+            const clearPromptTarget = (target) => {
+                if (!target) return false;
+                if (target.tagName === "TEXTAREA" || target.tagName === "INPUT") {
+                    setNativeValue(target, "");
+                    fireInputEvents(target);
+                    return true;
+                }
+                if (isSlateEditor(target)) {
+                    clearSlateEditor(target);
+                    target.dispatchEvent(createInputEvent("input", ""));
+                    target.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+                    return true;
+                }
+                if (target.getAttribute?.("contenteditable") === "true") {
+                    target.textContent = "";
+                    fireInputEvents(target);
+                    return true;
+                }
+                return false;
+            };
+            const dispatchSyntheticKeyboardEvent = (target, type, key, options = {}) => {
+                if (!target) return false;
+                try {
+                    target.dispatchEvent(
+                        new KeyboardEvent(type, {
+                            bubbles: true,
+                            cancelable: true,
+                            composed: true,
+                            key,
+                            ...options,
+                        })
+                    );
+                    return true;
+                } catch (_error) {
+                    return false;
+                }
+            };
+            const appendTextToPromptTarget = (target, value) => {
+                if (!target) return { ok: false, reason: "prompt_target_missing" };
+                const textToInsert = String(value || "");
+                if (!textToInsert) return { ok: true, skipped: true };
+                target.focus?.();
+                if (target.tagName === "TEXTAREA" || target.tagName === "INPUT") {
+                    const currentValue = String(target.value || "");
+                    setNativeValue(target, `${currentValue}${textToInsert}`);
+                    target.dispatchEvent(createInputEvent("beforeinput", textToInsert));
+                    target.dispatchEvent(createInputEvent("input", textToInsert));
+                    target.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+                    return { ok: true, method: "native_value_append" };
+                }
+                if (isSlateEditor(target) || target.getAttribute?.("contenteditable") === "true") {
+                    placeCaretAtEnd(target);
+                    target.dispatchEvent(createInputEvent("beforeinput", textToInsert));
+                    let inserted = false;
+                    try {
+                        inserted = document.execCommand("insertText", false, textToInsert);
+                    } catch (_error) {
+                        inserted = false;
+                    }
+                    if (!inserted) {
+                        const selection = window.getSelection();
+                        const range = selection?.rangeCount ? selection.getRangeAt(0) : document.createRange();
+                        const textNode = document.createTextNode(textToInsert);
+                        range.deleteContents();
+                        range.insertNode(textNode);
+                        range.setStartAfter(textNode);
+                        range.collapse(true);
+                        selection?.removeAllRanges();
+                        selection?.addRange(range);
+                    }
+                    target.dispatchEvent(createInputEvent("input", textToInsert));
+                    target.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+                    return { ok: true, method: inserted ? "exec_command_insert_text" : "range_insert_text" };
+                }
+                return { ok: false, reason: "unsupported_prompt_target" };
+            };
+            const runScriptAtProbe = async (target) => {
+                target.focus?.();
+                if (isSlateEditor(target) || target.getAttribute?.("contenteditable") === "true") {
+                    placeCaretAtEnd(target);
+                }
+                dispatchSyntheticKeyboardEvent(target, "keydown", "@", {
+                    code: "Digit2",
+                    shiftKey: true,
+                    keyCode: 50,
+                    which: 50,
+                });
+                dispatchSyntheticKeyboardEvent(target, "keypress", "@", {
+                    code: "Digit2",
+                    shiftKey: true,
+                    charCode: 64,
+                    keyCode: 64,
+                    which: 64,
+                });
+                const appendResult = appendTextToPromptTarget(target, "@");
+                await sleep(Math.max(300, Math.min(2500, Number(probeWaitMsValue) || 1200)));
+                dispatchSyntheticKeyboardEvent(target, "keyup", "@", {
+                    code: "Digit2",
+                    shiftKey: true,
+                    keyCode: 50,
+                    which: 50,
+                });
+                await sleep(180);
+                return {
+                    append_result: appendResult,
+                    prompt_text_after: textOf(target).slice(0, 200),
+                    selection_after: summarizeSelection(),
+                    mention_ui_after: collectMentionOverlayEvidence(),
+                };
+            };
+            const runKeyboardOnlyAtProbe = async (target) => {
+                target.focus?.();
+                if (isSlateEditor(target) || target.getAttribute?.("contenteditable") === "true") {
+                    placeCaretAtEnd(target);
+                }
+                dispatchSyntheticKeyboardEvent(target, "keydown", "Shift", {
+                    code: "ShiftLeft",
+                    shiftKey: true,
+                    keyCode: 16,
+                    which: 16,
+                });
+                dispatchSyntheticKeyboardEvent(target, "keydown", "@", {
+                    code: "Digit2",
+                    shiftKey: true,
+                    keyCode: 50,
+                    which: 50,
+                });
+                dispatchSyntheticKeyboardEvent(target, "keypress", "@", {
+                    code: "Digit2",
+                    shiftKey: true,
+                    charCode: 64,
+                    keyCode: 64,
+                    which: 64,
+                });
+                await sleep(Math.max(300, Math.min(2500, Number(probeWaitMsValue) || 1200)));
+                dispatchSyntheticKeyboardEvent(target, "keyup", "@", {
+                    code: "Digit2",
+                    shiftKey: true,
+                    keyCode: 50,
+                    which: 50,
+                });
+                dispatchSyntheticKeyboardEvent(target, "keyup", "Shift", {
+                    code: "ShiftLeft",
+                    keyCode: 16,
+                    which: 16,
+                });
+                await sleep(180);
+                return {
+                    append_result: { ok: true, method: "keyboard_only" },
+                    prompt_text_after: textOf(target).slice(0, 200),
+                    selection_after: summarizeSelection(),
+                    mention_ui_after: collectMentionOverlayEvidence(),
+                };
+            };
+            const collectPromptProbeState = (target) => ({
+                prompt_target: summarizeElement(target),
+                prompt_text: textOf(target).slice(0, 200),
+                prompt_state: parsePromptState(),
+                prompt_slate: summarizeSlateState(target),
+                selection: summarizeSelection(),
+                mention_ui: collectMentionOverlayEvidence(),
+            });
             const isLikelyPromptField = (el) => {
                 if (!visible(el)) return false;
                 if (isSlateEditor(el)) return true;
@@ -2303,6 +2583,7 @@ async function runVideoUiPrepare(tabId, jobPayload) {
                 prompt_target_before: null,
                 prompt_target_after: null,
                 prompt_written: false,
+                event_probe: null,
                 submit_candidates: [],
                 all_textareas: [],
             };
@@ -2326,7 +2607,38 @@ async function runVideoUiPrepare(tabId, jobPayload) {
                 .slice(0, 6)
                 .map((el) => summarizeElement(el));
 
-            if (result.surface_after?.kind === "generation" && promptTarget && promptValue) {
+            if (result.surface_after?.kind === "generation" && promptTarget && probeModeValue) {
+                const probe = installPromptEventProbe(promptTarget);
+                try {
+                    promptTarget.focus();
+                    if (!preservePromptValue) {
+                        clearPromptTarget(promptTarget);
+                    }
+                    result.event_probe = {
+                        mode: probeModeValue,
+                        preserve_prompt: !!preservePromptValue,
+                        before: collectPromptProbeState(promptTarget),
+                    };
+                    if (probeModeValue === "probe_script_at") {
+                        result.event_probe.script_result = await runScriptAtProbe(promptTarget);
+                    } else if (probeModeValue === "probe_keyboard_only_at") {
+                        result.event_probe.script_result = await runKeyboardOnlyAtProbe(promptTarget);
+                    } else if (probeModeValue === "probe_manual_at") {
+                        if (isSlateEditor(promptTarget) || promptTarget.getAttribute?.("contenteditable") === "true") {
+                            placeCaretAtEnd(promptTarget);
+                        }
+                        await sleep(Math.max(1000, Number(probeWaitMsValue) || 8000));
+                    } else {
+                        result.event_probe.unsupported_mode = probeModeValue;
+                    }
+                    result.event_probe.after = collectPromptProbeState(promptTarget);
+                    result.event_probe.events = probe.events.slice();
+                } catch (error) {
+                    result.prompt_write_error = String(error?.message || error);
+                } finally {
+                    probe.stop();
+                }
+            } else if (result.surface_after?.kind === "generation" && promptTarget && promptValue) {
                 try {
                     promptTarget.focus();
                     if (promptTarget.tagName === "TEXTAREA" || promptTarget.tagName === "INPUT") {
@@ -8599,11 +8911,11 @@ async function handleRunJob(data) {
     let beforeContext = await collectExecutionContext(targetTab.id);
     let recoveryContext = null;
     const beforeSurface =
-        jobType === "video_ui_submit" || jobType === "video_ui_workflow"
+        jobType === "video_ui_workflow"
             ? await hasApplicationErrorSurface(targetTab.id)
             : null;
     if (
-        (jobType === "video_ui_submit" || jobType === "video_ui_workflow") &&
+        (jobType === "video_ui_workflow") &&
         (isApplicationErrorContext(beforeContext) || !!beforeSurface?.has_error)
     ) {
         recoveryContext = await recoverApplicationErrorTab(targetTab.id, targetProjectId, activateTab);
@@ -8640,24 +8952,6 @@ async function handleRunJob(data) {
             requested_scope: String(jobPayload.scope || "video_prepare"),
             tab_id: targetTab.id,
             ui_state: await runVideoUiPrepare(targetTab.id, jobPayload),
-        };
-    } else if (jobType === "video_ui_submit_probe") {
-        resultPayload = {
-            requested_scope: String(jobPayload.scope || "video_submit_probe"),
-            tab_id: targetTab.id,
-            ui_state: await runVideoUiSubmitProbe(targetTab.id, jobPayload),
-        };
-    } else if (jobType === "video_ui_type_probe") {
-        resultPayload = {
-            requested_scope: String(jobPayload.scope || "video_ui_type_probe"),
-            tab_id: targetTab.id,
-            ui_state: await runVideoUiTypeProbe(targetTab.id, jobPayload),
-        };
-    } else if (jobType === "video_ui_submit") {
-        resultPayload = {
-            requested_scope: String(jobPayload.scope || "video_ui_submit"),
-            tab_id: targetTab.id,
-            ui_state: await runVideoUiSubmit(targetTab.id, jobPayload),
         };
     } else if (jobType === "video_submode_probe") {
         resultPayload = {

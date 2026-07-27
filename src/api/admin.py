@@ -129,6 +129,7 @@ async def _bootstrap_browser_profile_for_token(
     *,
     auto_launch_browser: bool = False,
     chrome_path: Optional[str] = None,
+    startup_project_id: Optional[str] = None,
 ) -> dict:
     token_id = int(getattr(token_obj, "id"))
     route_key = make_route_key(token_id, getattr(token_obj, "extension_route_key", None))
@@ -147,7 +148,10 @@ async def _bootstrap_browser_profile_for_token(
         token_id=token_id,
         email=str(getattr(token_obj, "email", "") or "").strip(),
         route_key=route_key,
-        current_project_id=str(getattr(token_obj, "current_project_id", "") or "").strip(),
+        current_project_id=(
+            str(startup_project_id or "").strip()
+            or str(getattr(token_obj, "current_project_id", "") or "").strip()
+        ),
     )
 
     try:
@@ -224,74 +228,85 @@ async def _sync_account_credentials(token_id: int) -> dict:
         "session_token_present": False,
         "current_email": runtime.get("current_email") or "",
         "error": "",
+        "launch_attempted": False,
+        "launch_success": False,
     }
     debug_logger.log_info(
         f"[API] 同步账号凭证请求: token_id={token_id}, "
         f"captcha_method={config.captcha_method}, route_key={runtime.get('route_key') or '-'}"
     )
 
+    async def attempt_browser_runtime_sync(*, auto_launch_if_needed: bool) -> None:
+        nonlocal token_obj, runtime, browser_sync
+
+        await _sync_browser_worker_views()
+        runtime = await _build_account_runtime_snapshot(token_obj)
+        browser_sync["current_email"] = runtime.get("current_email") or ""
+
+        if not auto_launch_if_needed and not runtime.get("browser_online"):
+            return
+
+        from ..services.browser_captcha_extension import ExtensionCaptchaService
+
+        if auto_launch_if_needed and not runtime.get("browser_online"):
+            browser_sync["launch_attempted"] = True
+
+        service = await ExtensionCaptchaService.get_instance(db)
+        browser_job = await service.dispatch_ui_job(
+            token_id=token_id,
+            job_type="account_credential_probe",
+            project_id=str(getattr(token_obj, "current_project_id", "") or "").strip() or None,
+            payload={"activate_tab": False},
+            timeout=45,
+        )
+        browser_sync["attempted"] = True
+        if browser_sync["launch_attempted"]:
+            browser_sync["launch_success"] = True
+
+        ui_state = (
+            ((browser_job or {}).get("result") or {}).get("ui_state")
+            if isinstance((browser_job or {}).get("result"), dict)
+            else {}
+        ) or {}
+        cookie_items = ui_state.get("cookie_items") if isinstance(ui_state, dict) else None
+        cookie_count = len(cookie_items) if isinstance(cookie_items, list) else 0
+        browser_sync["cookie_count"] = cookie_count
+        browser_sync["current_email"] = str(ui_state.get("current_email") or "").strip()
+        browser_sync["session_token_present"] = bool(
+            ui_state.get("session_token_present") if isinstance(ui_state, dict) else False
+        )
+        if cookie_count <= 0:
+            browser_sync["error"] = "在线浏览器未返回可用 cookie"
+            return
+
+        browser_derived_st = extract_session_token_from_cookie_payload(cookie_items)
+        merged_cookie = merge_browser_cookie_payloads_prefer_live_session(
+            getattr(token_obj, "cookie", None),
+            cookie_items,
+        )
+        normalized_cookie = normalize_cookie_storage_text(merged_cookie)
+        derived_st = browser_derived_st or extract_session_token_from_cookie_payload(normalized_cookie)
+        await token_manager.update_token(
+            token_id=token_id,
+            cookie=normalized_cookie,
+            st=derived_st or None,
+        )
+        browser_sync["success"] = True
+        browser_sync["source"] = "live_browser_profile"
+        browser_sync["session_token_present"] = bool(derived_st)
+        browser_sync["error"] = ""
+        token_obj = await token_manager.get_token(token_id)
+        runtime = await _build_account_runtime_snapshot(token_obj)
+        debug_logger.log_info(
+            f"[API] 浏览器运行时凭证同步成功: token_id={token_id}, "
+            f"cookie_count={cookie_count}, session_token_present={bool(derived_st)}, "
+            f"launch_attempted={browser_sync['launch_attempted']}"
+        )
+
     try:
         if runtime.get("browser_online"):
-            browser_sync["attempted"] = True
             try:
-                await _sync_browser_worker_views()
-                from ..services.browser_captcha_extension import ExtensionCaptchaService
-
-                service = await ExtensionCaptchaService.get_instance(db)
-                ok, route_key, reason, snapshot = await service.validate_connection_for_token(token_id)
-                if not ok:
-                    browser_sync["error"] = reason
-                else:
-                    browser_job = await service.dispatch_ui_job(
-                        token_id=token_id,
-                        job_type="account_credential_probe",
-                        project_id=str(getattr(token_obj, "current_project_id", "") or "").strip() or None,
-                        payload={"activate_tab": False},
-                        timeout=45,
-                    )
-                    ui_state = (
-                        ((browser_job or {}).get("result") or {}).get("ui_state")
-                        if isinstance((browser_job or {}).get("result"), dict)
-                        else {}
-                    ) or {}
-                    cookie_items = ui_state.get("cookie_items") if isinstance(ui_state, dict) else None
-                    cookie_count = len(cookie_items) if isinstance(cookie_items, list) else 0
-                    browser_sync["cookie_count"] = cookie_count
-                    browser_sync["current_email"] = (
-                        str(ui_state.get("current_email") or snapshot.get("current_email") or "").strip()
-                        if isinstance(snapshot, dict)
-                        else str(ui_state.get("current_email") or "").strip()
-                    )
-                    browser_sync["session_token_present"] = bool(
-                        ui_state.get("session_token_present") if isinstance(ui_state, dict) else False
-                    )
-                    if cookie_count <= 0:
-                        browser_sync["error"] = "在线浏览器未返回可用 cookie"
-                    else:
-                        browser_derived_st = extract_session_token_from_cookie_payload(cookie_items)
-                        merged_cookie = merge_browser_cookie_payloads_prefer_live_session(
-                            getattr(token_obj, "cookie", None),
-                            cookie_items,
-                        )
-                        normalized_cookie = normalize_cookie_storage_text(merged_cookie)
-                        derived_st = browser_derived_st or extract_session_token_from_cookie_payload(
-                            normalized_cookie
-                        )
-                        await token_manager.update_token(
-                            token_id=token_id,
-                            cookie=normalized_cookie,
-                            st=derived_st or None,
-                        )
-                        browser_sync["success"] = True
-                        browser_sync["source"] = "live_browser_profile"
-                        browser_sync["session_token_present"] = bool(derived_st)
-                        token_obj = await token_manager.get_token(token_id)
-                        runtime = await _build_account_runtime_snapshot(token_obj)
-                        debug_logger.log_info(
-                            f"[API] 浏览器运行时凭证同步成功: token_id={token_id}, "
-                            f"route_key={route_key or '-'}, cookie_count={cookie_count}, "
-                            f"session_token_present={bool(derived_st)}"
-                        )
+                await attempt_browser_runtime_sync(auto_launch_if_needed=False)
             except Exception as browser_exc:
                 browser_sync["error"] = str(browser_exc)
                 debug_logger.log_warning(
@@ -303,12 +318,29 @@ async def _sync_account_credentials(token_id: int) -> dict:
         runtime = await _build_account_runtime_snapshot(updated_token)
 
         if not refreshed and not browser_sync["success"]:
+            try:
+                await attempt_browser_runtime_sync(auto_launch_if_needed=True)
+            except Exception as browser_exc:
+                browser_sync["error"] = str(browser_exc)
+                debug_logger.log_warning(
+                    f"[API] 自动拉起浏览器后凭证同步失败 token_id={token_id}: {browser_exc}"
+                )
+            if browser_sync["success"]:
+                refreshed = await token_manager._refresh_at(token_id)
+                updated_token = await token_manager.get_token(token_id)
+                runtime = await _build_account_runtime_snapshot(updated_token)
+
+        if not refreshed and not browser_sync["success"]:
             has_saved_st = bool(str(getattr(updated_token, "st", "") or "").strip()) if updated_token else False
             has_saved_cookie = bool(str(getattr(updated_token, "cookie", "") or "").strip()) if updated_token else False
             if not has_saved_st and not has_saved_cookie:
+                if browser_sync["launch_attempted"] and not runtime.get("browser_online"):
+                    raise HTTPException(status_code=409, detail="已尝试自动启动该账号的独立浏览器，但在超时时间内未等到扩展在线，请检查宿主机 host bridge、Chrome for Testing 和扩展连接状态")
                 if not runtime.get("browser_online"):
-                    raise HTTPException(status_code=409, detail="请先启动该账号的独立浏览器，并等待扩展在线后再同步凭证")
+                    raise HTTPException(status_code=409, detail="当前未发现在线浏览器，且自动拉起未成功，请检查独立 Profile、宿主机启动桥和 Chrome for Testing 后重试")
                 if not str(runtime.get("current_email") or "").strip():
+                    if browser_sync["launch_attempted"]:
+                        raise HTTPException(status_code=409, detail="浏览器已自动启动，但还未检测到已登录账号，请先在该 Profile 中登录 Google 账号后再同步凭证")
                     raise HTTPException(status_code=409, detail="浏览器已在线，但还未检测到已登录账号，请先在该 Profile 中登录 Google 账号后再同步凭证")
             error_detail = "账号凭证同步失败"
             if browser_sync["error"]:
@@ -605,7 +637,7 @@ class AddTokenRequest(BaseModel):
     image_enabled: bool = True
     video_enabled: bool = True
     image_concurrency: int = -1
-    video_concurrency: int = -1
+    video_concurrency: int = 1
     auto_create_profile: bool = True
     auto_launch_browser: bool = False
     chrome_path: Optional[str] = None
@@ -613,6 +645,11 @@ class AddTokenRequest(BaseModel):
 
 class BrowserProfileBootstrapRequest(BaseModel):
     auto_launch_browser: bool = False
+    chrome_path: Optional[str] = None
+
+
+class OpenProjectBrowserRequest(BaseModel):
+    project_id: Optional[str] = None
     chrome_path: Optional[str] = None
 
 
@@ -712,7 +749,7 @@ class ImportTokenItem(BaseModel):
     image_enabled: bool = True
     video_enabled: bool = True
     image_concurrency: int = -1
-    video_concurrency: int = -1
+    video_concurrency: int = 1
 
 
 class ImportTokensRequest(BaseModel):
@@ -1068,6 +1105,40 @@ async def bootstrap_token_browser_profile(
             if profile_bootstrap.get("success")
             else "独立浏览器 profile 初始化失败"
         ),
+        "profile_bootstrap": profile_bootstrap,
+    }
+
+
+@router.post("/api/tokens/{token_id}/open-project-browser")
+async def open_token_project_browser(
+    token_id: int,
+    request: OpenProjectBrowserRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """使用该 token 的独立浏览器直接打开指定 Flow 项目页。"""
+    _ = token
+    token_obj = await db.get_token(token_id)
+    if not token_obj:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+    resolved_project_id = str(request.project_id or "").strip() or str(getattr(token_obj, "current_project_id", "") or "").strip()
+    if not resolved_project_id:
+        raise HTTPException(status_code=400, detail="project_id 不能为空")
+
+    profile_bootstrap = await _bootstrap_browser_profile_for_token(
+        token_obj,
+        auto_launch_browser=True,
+        chrome_path=request.chrome_path,
+        startup_project_id=resolved_project_id,
+    )
+    return {
+        "success": bool(profile_bootstrap.get("success")),
+        "message": (
+            "已在该账号浏览器中打开项目"
+            if profile_bootstrap.get("success")
+            else "打开项目失败"
+        ),
+        "project_id": resolved_project_id,
         "profile_bootstrap": profile_bootstrap,
     }
 

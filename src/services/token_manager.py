@@ -273,7 +273,7 @@ class TokenManager:
         image_enabled: bool = True,
         video_enabled: bool = True,
         image_concurrency: int = -1,
-        video_concurrency: int = -1,
+        video_concurrency: int = 1,
         captcha_proxy_url: Optional[str] = None,
         extension_route_key: Optional[str] = None,
     ) -> Token:

@@ -12,7 +12,7 @@ Example:
 """
 
 import re
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 from ..core.logger import debug_logger
 
 # ──────────────────────────────────────────────
@@ -675,3 +675,181 @@ def get_base_model_aliases() -> Dict[str, str]:
         )
 
     return aliases
+
+
+BATCH_DURATION_SUFFIX_RE = re.compile(r"_(4s|6s|8s|10s)$", re.IGNORECASE)
+BATCH_DURATION_ORDER = {
+    "4s": 4,
+    "5s": 5,
+    "6s": 6,
+    "8s": 8,
+    "10s": 10,
+}
+BATCH_ASPECT_DISPLAY_MAP = {
+    "landscape": "16:9",
+    "portrait": "9:16",
+}
+BATCH_ASPECT_INTERNAL_MAP = {
+    "16:9": "landscape",
+    "9:16": "portrait",
+    "landscape": "landscape",
+    "portrait": "portrait",
+}
+
+
+def _normalize_batch_duration_choice(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text
+
+
+def _normalize_batch_aspect_choice(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "16:9"
+    return BATCH_ASPECT_INTERNAL_MAP.get(text, BATCH_ASPECT_INTERNAL_MAP.get(text.lower(), ""))
+
+
+def _humanize_batch_family_name(family_key: str) -> str:
+    tokens = re.split(r"[-_]+", str(family_key or "").strip())
+    replacements = {
+        "veo": "Veo",
+        "omni": "Omni",
+        "flash": "Flash",
+        "lite": "Lite",
+        "fast": "Fast",
+        "ultra": "Ultra",
+        "relaxed": "Relaxed",
+        "edit": "Edit",
+    }
+    normalized = [
+        replacements.get(token.lower(), token.upper() if token.isdigit() else token)
+        for token in tokens
+        if token and token.lower() not in {"t2v", "r2v", "i2v"}
+    ]
+    return " ".join(normalized) or family_key
+
+
+def get_batch_video_model_catalog(model_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return batch-friendly video model families resolved from shared aliases."""
+    families: Dict[str, Dict[str, Any]] = {}
+
+    for alias, orientations in VIDEO_BASE_MODELS.items():
+        landscape_model = orientations.get("landscape")
+        if not landscape_model or landscape_model not in model_config:
+            continue
+
+        config = model_config.get(landscape_model) or {}
+        if config.get("type") != "video":
+            continue
+
+        video_type = str(config.get("video_type") or "").strip().lower()
+        if video_type not in {"t2v", "r2v", "edit"}:
+            continue
+
+        family_key = BATCH_DURATION_SUFFIX_RE.sub("", alias)
+        duration_key = alias[len(family_key):].lstrip("_")
+        if not duration_key:
+            continue
+        family_entry = families.setdefault(
+            family_key,
+            {
+                "key": family_key,
+                "label": _humanize_batch_family_name(family_key),
+                "task_types": set(),
+                "duration_options": set(),
+                "aspect_ratio_options": set(),
+                "variants": {},
+            },
+        )
+        family_entry["task_types"].add(video_type)
+        family_entry["duration_options"].add(duration_key)
+        variant_entry = family_entry["variants"].setdefault(duration_key, {})
+        for aspect_key, target_model in orientations.items():
+            if target_model in model_config and aspect_key in BATCH_ASPECT_DISPLAY_MAP:
+                family_entry["aspect_ratio_options"].add(BATCH_ASPECT_DISPLAY_MAP[aspect_key])
+                variant_entry[aspect_key] = target_model
+
+    def _sort_duration_key(value: str) -> Tuple[int, str]:
+        normalized = _normalize_batch_duration_choice(value)
+        return (BATCH_DURATION_ORDER.get(normalized, 999), normalized)
+
+    items: List[Dict[str, Any]] = []
+    for family_key in sorted(families.keys()):
+        entry = families[family_key]
+        duration_options = sorted(entry["duration_options"], key=_sort_duration_key)
+        aspect_ratio_options = [item for item in ("16:9", "9:16") if item in entry["aspect_ratio_options"]]
+        items.append(
+            {
+                "key": entry["key"],
+                "label": entry["label"],
+                "task_types": sorted(entry["task_types"]),
+                "duration_options": duration_options,
+                "aspect_ratio_options": aspect_ratio_options,
+                "variants": entry["variants"],
+            }
+        )
+    return items
+
+
+def resolve_batch_video_model(
+    *,
+    model_family: str,
+    task_type: Optional[str],
+    duration: Optional[str],
+    aspect_ratio: Optional[str],
+    model_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Resolve batch model family + duration + aspect to an internal model key."""
+    normalized_family = str(model_family or "").strip()
+    if not normalized_family:
+        return {"resolved_model": None, "error": "model 不能为空"}
+
+    normalized_task_type = str(task_type or "").strip().lower()
+    normalized_duration = _normalize_batch_duration_choice(duration)
+    normalized_aspect = _normalize_batch_aspect_choice(aspect_ratio)
+    if not normalized_aspect:
+        return {"resolved_model": None, "error": f"不支持的 aspect_ratio: {aspect_ratio}"}
+
+    if normalized_family in model_config:
+        config = model_config.get(normalized_family) or {}
+        if config.get("type") != "video":
+            return {"resolved_model": None, "error": f"模型不是视频模型: {normalized_family}"}
+        video_type = str(config.get("video_type") or "").strip().lower()
+        if normalized_task_type and normalized_task_type != video_type:
+            return {"resolved_model": None, "error": f"{normalized_family} 不支持任务类型 {normalized_task_type}"}
+        internal_aspect = str(config.get("aspect_ratio") or "")
+        aspect_display = "9:16" if "PORTRAIT" in internal_aspect else "16:9"
+        return {
+            "resolved_model": normalized_family,
+            "resolved_duration": normalized_duration,
+            "resolved_aspect_ratio": aspect_display,
+            "task_type": video_type,
+        }
+
+    catalog = {item["key"]: item for item in get_batch_video_model_catalog(model_config)}
+    family_entry = catalog.get(normalized_family)
+    if not family_entry:
+        return {"resolved_model": None, "error": f"不支持的模型家族: {normalized_family}"}
+
+    if normalized_task_type and normalized_task_type not in family_entry["task_types"]:
+        return {"resolved_model": None, "error": f"{normalized_family} 不支持任务类型 {normalized_task_type}"}
+
+    duration_options = family_entry["duration_options"]
+    chosen_duration = normalized_duration
+    if not chosen_duration:
+        return {"resolved_model": None, "error": "duration 不能为空"}
+    if chosen_duration not in duration_options:
+        return {"resolved_model": None, "error": f"{normalized_family} 不支持时长 {duration or '-'}"}
+
+    aspect_key = normalized_aspect
+    variant_entry = family_entry["variants"].get(chosen_duration) or {}
+    resolved_model = variant_entry.get(aspect_key)
+    if not resolved_model:
+        return {"resolved_model": None, "error": f"{normalized_family} 不支持横竖版 {aspect_ratio or '-'}"}
+
+    return {
+        "resolved_model": resolved_model,
+        "resolved_duration": chosen_duration,
+        "resolved_aspect_ratio": BATCH_ASPECT_DISPLAY_MAP.get(aspect_key, "16:9"),
+        "task_type": normalized_task_type or (family_entry["task_types"][0] if family_entry["task_types"] else ""),
+    }

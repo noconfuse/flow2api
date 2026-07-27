@@ -473,9 +473,6 @@ class ExtensionCaptchaService:
         return str(job_type or "").strip() in {
             "video_ui_probe",
             "video_ui_prepare",
-            "video_ui_submit_probe",
-            "video_ui_type_probe",
-            "video_ui_submit",
             "video_submode_probe",
             "video_ui_workflow",
         }

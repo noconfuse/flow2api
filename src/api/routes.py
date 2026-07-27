@@ -85,7 +85,7 @@ class NormalizedGenerationRequest:
     preferred_token_id: Optional[int] = None
     preferred_project_id: Optional[str] = None
     source_image_media_ids: Optional[List[str]] = None
-    source_image_selected_material_index: Optional[int] = None
+    reference_assets: Optional[List[Dict[str, Any]]] = None
 
 
 def set_generation_handler(handler: GenerationHandler):
@@ -464,7 +464,7 @@ async def _normalize_openai_request(
             preferred_token_id=request.preferred_token_id,
             preferred_project_id=request.preferred_project_id,
             source_image_media_ids=request.source_image_media_ids,
-            source_image_selected_material_index=request.source_image_selected_material_index,
+            reference_assets=request.reference_assets,
         )
 
     if request.contents:
@@ -509,7 +509,7 @@ async def _normalize_gemini_request(
         preferred_token_id=request.preferred_token_id,
         preferred_project_id=request.preferred_project_id,
         source_image_media_ids=request.source_image_media_ids,
-        source_image_selected_material_index=request.source_image_selected_material_index,
+        reference_assets=request.reference_assets,
     )
 
 
@@ -523,7 +523,7 @@ async def _collect_non_stream_result(
     preferred_token_id: Optional[int] = None,
     preferred_project_id: Optional[str] = None,
     source_image_media_ids: Optional[List[str]] = None,
-    source_image_selected_material_index: Optional[int] = None,
+    reference_assets: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     handler = _ensure_generation_handler()
     result = None
@@ -538,7 +538,7 @@ async def _collect_non_stream_result(
         preferred_token_id=preferred_token_id,
         preferred_project_id=preferred_project_id,
         source_image_media_ids=source_image_media_ids,
-        source_image_selected_material_index=source_image_selected_material_index,
+        reference_assets=reference_assets,
     ):
         result = chunk
 
@@ -772,7 +772,7 @@ async def _iterate_openai_stream(
         preferred_token_id=normalized.preferred_token_id,
         preferred_project_id=normalized.preferred_project_id,
         source_image_media_ids=normalized.source_image_media_ids,
-        source_image_selected_material_index=normalized.source_image_selected_material_index,
+        reference_assets=normalized.reference_assets,
     ):
         if chunk.startswith("data: "):
             yield chunk
@@ -801,7 +801,7 @@ async def _iterate_gemini_stream(
         preferred_token_id=normalized.preferred_token_id,
         preferred_project_id=normalized.preferred_project_id,
         source_image_media_ids=normalized.source_image_media_ids,
-        source_image_selected_material_index=normalized.source_image_selected_material_index,
+        reference_assets=normalized.reference_assets,
     ):
         if chunk.startswith("data: "):
             payload_text = chunk[6:].strip()
@@ -933,9 +933,9 @@ async def create_chat_completion(
                 video_media_id=normalized.video_media_id,
                 video_edit_params=normalized.video_edit_params,
                 preferred_token_id=normalized.preferred_token_id,
-            preferred_project_id=normalized.preferred_project_id,
-            source_image_media_ids=normalized.source_image_media_ids,
-            source_image_selected_material_index=normalized.source_image_selected_material_index,
+                preferred_project_id=normalized.preferred_project_id,
+                source_image_media_ids=normalized.source_image_media_ids,
+                reference_assets=normalized.reference_assets,
             )
         )
         return _build_openai_json_response(payload)
@@ -972,9 +972,9 @@ async def generate_content(
                     video_media_id=normalized.video_media_id,
                     video_edit_params=normalized.video_edit_params,
                     preferred_token_id=normalized.preferred_token_id,
-        preferred_project_id=normalized.preferred_project_id,
-        source_image_media_ids=normalized.source_image_media_ids,
-        source_image_selected_material_index=normalized.source_image_selected_material_index,
+                    preferred_project_id=normalized.preferred_project_id,
+                    source_image_media_ids=normalized.source_image_media_ids,
+                    reference_assets=normalized.reference_assets,
                 )
             )
         )

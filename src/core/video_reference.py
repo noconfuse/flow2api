@@ -46,14 +46,6 @@ def parse_video_edit_uri(uri: str) -> Dict[str, Any]:
 
     start_frame_index = _read_int("start_frame", "startFrame", "startFrameIndex")
     end_frame_index = _read_int("end_frame", "endFrame", "endFrameIndex")
-    selected_material_index = _read_int(
-        "selected_material_index",
-        "selectedMaterialIndex",
-        "material_index",
-        "materialIndex",
-        "source_index",
-        "sourceIndex",
-    )
     start_seconds = _read_float("start_time", "startTime", "start_seconds", "startSeconds")
     end_seconds = _read_float("end_time", "endTime", "end_seconds", "endSeconds")
     source_duration_seconds = _read_float(
@@ -75,7 +67,6 @@ def parse_video_edit_uri(uri: str) -> Dict[str, Any]:
             raise ValueError("edit:// 的 end_time 不能小于 start_time")
         return {
             "media_id": media_id,
-            "selected_material_index": selected_material_index,
             "start_seconds": float(start_seconds),
             "end_seconds": float(end_seconds),
             "source_duration_seconds": float(source_duration_seconds) if source_duration_seconds is not None else None,
@@ -90,7 +81,6 @@ def parse_video_edit_uri(uri: str) -> Dict[str, Any]:
 
     return {
         "media_id": media_id,
-        "selected_material_index": selected_material_index,
         "start_frame_index": start_frame_index,
         "end_frame_index": end_frame_index,
         "source_duration_seconds": float(source_duration_seconds) if source_duration_seconds is not None else None,

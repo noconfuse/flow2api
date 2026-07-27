@@ -2926,7 +2926,7 @@ class FlowClient:
             media_type="video",
         )
 
-    async def _submit_video_via_extension_ui(
+    async def _submit_video_via_extension_workflow(
         self,
         *,
         at: str,
@@ -2936,347 +2936,16 @@ class FlowClient:
         model_key: str,
         aspect_ratio: str,
         preferred_submode: str = "文本",
-        reference_texts: Optional[List[str]] = None,
-        reference_media_id: Optional[str] = None,
-        start_frame_index: Optional[int] = None,
-        end_frame_index: Optional[int] = None,
-        start_seconds: Optional[float] = None,
-        end_seconds: Optional[float] = None,
-        source_duration_seconds: Optional[float] = None,
+        reference_assets: Optional[List[Dict[str, Any]]] = None,
+        workflow_mode: str = "text_to_video",
     ) -> Dict[str, Any]:
-        print(
-            f"[VIDEO_UI_DEBUG] _submit_video_via_extension_ui start "
-            f"token_id={token_id} project_id={project_id} prompt_len={len(str(prompt or ''))} "
-            f"preferred_submode={preferred_submode} reference_count={len(reference_texts or [])}",
-            flush=True,
-        )
         if not self.db:
-            raise RuntimeError("Extension UI video submit requires database access")
+            raise RuntimeError("Extension workflow video submit requires database access")
 
         token_row = await self.db.get_token(token_id)
         st_token = str(getattr(token_row, "st", "") or "").strip() if token_row else ""
         if not st_token:
-            raise RuntimeError(f"Token {token_id} is missing ST; cannot discover UI-submitted video operations")
-
-        before_snapshot = await self.get_flow_project_initial_data(st_token, project_id)
-        known_operations = self._collect_video_operations_from_project_snapshot(
-            before_snapshot,
-            fallback_project_id=project_id,
-        )
-
-        from .browser_captcha_extension import ExtensionCaptchaService
-
-        service = await ExtensionCaptchaService.get_instance(self.db)
-        normalized_reference_texts = [
-            str(item or "").strip()
-            for item in (reference_texts or [])
-            if str(item or "").strip()
-        ][:6]
-        normalized_preferred_submode = str(preferred_submode or "").strip() or "文本"
-        normalized_reference_media_id = str(reference_media_id or "").strip()
-        normalized_start_frame_index = int(start_frame_index) if start_frame_index is not None else None
-        normalized_end_frame_index = int(end_frame_index) if end_frame_index is not None else None
-        normalized_start_seconds = float(start_seconds) if start_seconds is not None else None
-        normalized_end_seconds = float(end_seconds) if end_seconds is not None else None
-        normalized_source_duration_seconds = (
-            float(source_duration_seconds) if source_duration_seconds is not None else None
-        )
-        video_ui_settings = self._derive_extension_video_ui_settings(
-            model_key=model_key,
-            aspect_ratio=aspect_ratio,
-            outputs_per_prompt=1,
-        )
-
-        def _extract_ui_state(payload: Dict[str, Any]) -> Dict[str, Any]:
-            if not isinstance(payload, dict):
-                return {}
-            result = payload.get("result")
-            if isinstance(result, dict):
-                ui_state = result.get("ui_state")
-                if isinstance(ui_state, dict):
-                    return ui_state
-            ui_state = payload.get("ui_state")
-            return ui_state if isinstance(ui_state, dict) else {}
-
-        def _submit_clickable(ui_state: Dict[str, Any]) -> bool:
-            if not isinstance(ui_state, dict):
-                return False
-            best = ui_state.get("best_submit_candidate")
-            if isinstance(best, dict):
-                disabled = bool(best.get("disabled")) or str(best.get("aria_disabled") or "").strip().lower() == "true"
-                if not disabled:
-                    return True
-            steps = ui_state.get("steps")
-            if not isinstance(steps, list):
-                return False
-            for step in reversed(steps):
-                if not isinstance(step, dict):
-                    continue
-                submit_button = step.get("submit_button")
-                if not isinstance(submit_button, dict):
-                    continue
-                disabled = bool(submit_button.get("disabled")) or str(submit_button.get("aria_disabled") or "").strip().lower() == "true"
-                if not disabled:
-                    return True
-            return False
-
-        def _should_retry_type_only(ui_state: Dict[str, Any], prompt_text: str) -> bool:
-            if not isinstance(ui_state, dict):
-                return False
-            steps = ui_state.get("steps")
-            if not isinstance(steps, list):
-                return False
-            normalized_prompt = str(prompt_text or "").strip()
-            for step in steps:
-                if not isinstance(step, dict):
-                    continue
-                body_text = str(step.get("body_text_prefix") or "")
-                if "智能体" in body_text or "article_sp" in body_text or "article_spark" in body_text:
-                    return True
-                prompt_slate = step.get("prompt_slate")
-                if not isinstance(prompt_slate, dict):
-                    continue
-                placeholders = prompt_slate.get("placeholders")
-                slate_strings = prompt_slate.get("slate_strings")
-                has_placeholders = isinstance(placeholders, list) and len(placeholders) > 0
-                missing_slate_strings = not isinstance(slate_strings, list) or len(slate_strings) == 0
-                if not has_placeholders and not missing_slate_strings:
-                    continue
-                prompt_target = step.get("prompt_target") or {}
-                prompt_target_text = str(prompt_target.get("text") or "")
-                if normalized_prompt and normalized_prompt in prompt_target_text:
-                    return True
-            return False
-
-        def _classify_ui_state(ui_state: Dict[str, Any]) -> str:
-            if not isinstance(ui_state, dict):
-                return "unknown"
-            steps = ui_state.get("steps")
-            if not isinstance(steps, list):
-                return "unknown"
-            for step in reversed(steps):
-                if not isinstance(step, dict):
-                    continue
-                prompt_state = step.get("prompt_state") or {}
-                prompt_mode = str(prompt_state.get("promptMode") or "").strip().upper()
-                body_text = str(step.get("body_text_prefix") or "")
-                dialogs = str(step.get("dialogs_text") or "")
-                prompt_slate = step.get("prompt_slate") or {}
-                placeholders = prompt_slate.get("placeholders")
-                slate_strings = prompt_slate.get("slate_strings")
-                if "Nano Banana" in body_text or prompt_mode == "IMAGE":
-                    return "image_mode"
-                if "全部 image 图片 videocam 视频" in body_text or "上传媒体" in body_text or "upload 上传媒体" in body_text:
-                    return "create_menu_open"
-                if "article_spark" in body_text or "智能体" in dialogs:
-                    return "agent_or_chat_surface"
-                has_placeholders = isinstance(placeholders, list) and len(placeholders) > 0
-                missing_slate_strings = not isinstance(slate_strings, list) or len(slate_strings) == 0
-                if has_placeholders and missing_slate_strings:
-                    return "prompt_placeholder"
-            return "unknown"
-
-        # #region debug-point E:ui-result-summary
-        def _summarize_ui_state(ui_state: Dict[str, Any]) -> Dict[str, Any]:
-            if not isinstance(ui_state, dict):
-                return {}
-            steps = ui_state.get("steps")
-            step_tail: List[Dict[str, Any]] = []
-            if isinstance(steps, list):
-                for step in steps[-4:]:
-                    if not isinstance(step, dict):
-                        continue
-                    step_tail.append(
-                        {
-                            "label": str(step.get("label") or ""),
-                            "prompt_state": step.get("prompt_state"),
-                            "prompt_target": step.get("prompt_target"),
-                            "prompt_slate": step.get("prompt_slate"),
-                            "submit_button": step.get("submit_button"),
-                            "create_buttons": step.get("create_buttons"),
-                            "dialogs_text": str(step.get("dialogs_text") or ""),
-                            "body_text_prefix": str(step.get("body_text_prefix") or ""),
-                        }
-                    )
-            return {
-                "result_version": str(ui_state.get("result_version") or ""),
-                "build_marker": str(ui_state.get("build_marker") or ""),
-                "submit_mode": str(ui_state.get("submit_mode") or ""),
-                "best_submit_candidate": ui_state.get("best_submit_candidate"),
-                "agent_reset": ui_state.get("agent_reset"),
-                "mode_normalize": ui_state.get("mode_normalize"),
-                "click_debug": ui_state.get("click_debug"),
-                "clicked": bool(ui_state.get("clicked")),
-                "typed": bool(ui_state.get("typed")),
-                "frontend_errors": ui_state.get("frontend_errors"),
-                "steps_tail": step_tail,
-            }
-        # #endregion
-
-        async def _dispatch_type_only(prompt_text: str) -> Dict[str, Any]:
-            return await service.dispatch_ui_job(
-                token_id=token_id,
-                job_type="video_ui_submit",
-                project_id=project_id,
-                payload={
-                    "prompt": str(prompt_text or ""),
-                    "submit_mode": "type_only",
-                    "activate_tab": True,
-                    "target_generation_mode": "video",
-                    "desired_model_display_name": video_ui_settings["desired_model_display_name"],
-                    "desired_duration_seconds": video_ui_settings["desired_duration_seconds"],
-                    "desired_aspect_ratio_label": video_ui_settings["desired_aspect_ratio_label"],
-                    "desired_outputs_per_prompt": video_ui_settings["desired_outputs_per_prompt"],
-                    "preferred_submode": normalized_preferred_submode,
-                    "reference_texts": normalized_reference_texts,
-                    "reference_media_id": normalized_reference_media_id,
-                    "desired_start_frame_index": normalized_start_frame_index,
-                    "desired_end_frame_index": normalized_end_frame_index,
-                    "desired_start_seconds": normalized_start_seconds,
-                    "desired_end_seconds": normalized_end_seconds,
-                    "desired_source_duration_seconds": normalized_source_duration_seconds,
-                },
-                timeout=max(120, self._get_video_submit_timeout() + 45),
-            )
-
-        async def _warmup_video_type_only_surface() -> None:
-            try:
-                warmup_result = await service.dispatch_ui_job(
-                    token_id=token_id,
-                    job_type="video_submode_probe",
-                    project_id=project_id,
-                    payload={
-                        "activate_tab": True,
-                        "target_generation_mode": "video",
-                        "desired_model_display_name": video_ui_settings["desired_model_display_name"],
-                        "desired_duration_seconds": video_ui_settings["desired_duration_seconds"],
-                        "desired_aspect_ratio_label": video_ui_settings["desired_aspect_ratio_label"],
-                        "desired_outputs_per_prompt": video_ui_settings["desired_outputs_per_prompt"],
-                        "preferred_submode": normalized_preferred_submode,
-                    },
-                    timeout=45,
-                )
-            except Exception as warmup_error:
-                debug_logger.log_warning(
-                    f"[VIDEO UI SUBMIT] warmup video_submode_probe failed for token_id={token_id} "
-                    f"project_id={project_id}: {warmup_error}"
-                )
-
-        await _warmup_video_type_only_surface()
-        type_result = await _dispatch_type_only(prompt)
-        if str(type_result.get("status") or "").strip().lower() != "success":
-            raise RuntimeError(
-                f"Extension UI video type_only failed: {type_result.get('error') or type_result.get('message') or type_result}"
-            )
-        typed_ui_state = _extract_ui_state(type_result)
-        if not _submit_clickable(typed_ui_state):
-            if _should_retry_type_only(typed_ui_state, prompt):
-                await _warmup_video_type_only_surface()
-                retry_type_result = await _dispatch_type_only(prompt)
-                if str(retry_type_result.get("status") or "").strip().lower() == "success":
-                    retry_ui_state = _extract_ui_state(retry_type_result)
-                    if _submit_clickable(retry_ui_state):
-                        type_result = retry_type_result
-                        typed_ui_state = retry_ui_state
-            if not _submit_clickable(typed_ui_state):
-                raise RuntimeError(
-                    "Extension UI video submit type_only did not unlock submit button: "
-                    f"{json.dumps(typed_ui_state, ensure_ascii=False)[:1200]}"
-                )
-
-        ui_result = await service.dispatch_ui_job(
-            token_id=token_id,
-            job_type="video_ui_submit",
-            project_id=project_id,
-            payload={
-                "submit_mode": "click_only",
-                "activate_tab": True,
-                "target_generation_mode": "video",
-                "desired_model_display_name": video_ui_settings["desired_model_display_name"],
-                "desired_duration_seconds": video_ui_settings["desired_duration_seconds"],
-                "desired_aspect_ratio_label": video_ui_settings["desired_aspect_ratio_label"],
-                "desired_outputs_per_prompt": video_ui_settings["desired_outputs_per_prompt"],
-                "preferred_submode": normalized_preferred_submode,
-                "reference_texts": normalized_reference_texts,
-                "reference_media_id": normalized_reference_media_id,
-                "desired_start_frame_index": normalized_start_frame_index,
-                "desired_end_frame_index": normalized_end_frame_index,
-                "desired_start_seconds": normalized_start_seconds,
-                "desired_end_seconds": normalized_end_seconds,
-                "desired_source_duration_seconds": normalized_source_duration_seconds,
-            },
-            timeout=max(120, self._get_video_submit_timeout() + 45),
-        )
-        if str(ui_result.get("status") or "").strip().lower() != "success":
-            raise RuntimeError(
-                f"Extension UI video submit click_only failed: {ui_result.get('error') or ui_result.get('message') or ui_result}"
-            )
-        click_ui_state = _extract_ui_state(ui_result)
-
-        try:
-            discovered_operations = await self._wait_for_new_video_operations_after_ui_submit(
-                st_token=st_token,
-                project_id=project_id,
-                known_operations=known_operations,
-                timeout_seconds=max(25, min(60, self._get_video_submit_timeout() + 15)),
-                poll_interval=1.5,
-            )
-        except RuntimeError as wait_error:
-            state_class = _classify_ui_state(click_ui_state)
-            summarized_click_ui_state = json.dumps(_summarize_ui_state(click_ui_state), ensure_ascii=False)[:4000]
-            raise RuntimeError(
-                f"{wait_error}; click_state={state_class}; ui_state={summarized_click_ui_state}"
-            ) from wait_error
-        if not discovered_operations:
-            state_class = _classify_ui_state(click_ui_state)
-            summarized_click_ui_state = json.dumps(_summarize_ui_state(click_ui_state), ensure_ascii=False)[:4000]
-            if state_class in {"image_mode", "create_menu_open", "prompt_placeholder", "agent_or_chat_surface"}:
-                raise RuntimeError(
-                    "UI submit reached a recoverable but incorrect UI state after click_only: "
-                    f"state={state_class}, project_id={project_id}, "
-                    f"ui_state={summarized_click_ui_state}"
-                )
-            raise RuntimeError(
-                "UI submit accepted, but no new video operation was discovered from project media snapshot: "
-                f"project_id={project_id}, state={state_class}, ui_state={summarized_click_ui_state}"
-            )
-
-        credits_value = None
-        try:
-            credits_payload = await self.get_credits(at)
-            credits_value = credits_payload.get("credits") if isinstance(credits_payload, dict) else None
-        except Exception as credits_error:
-            debug_logger.log_warning(f"[VIDEO UI SUBMIT] get_credits after submit failed: {credits_error}")
-
-        response: Dict[str, Any] = {
-            "operations": discovered_operations,
-            "ui_submit": {
-                "type_job_id": str(type_result.get("job_id") or ""),
-                "click_job_id": str(ui_result.get("job_id") or ""),
-                "status": str(ui_result.get("status") or ""),
-            },
-        }
-        if credits_value is not None:
-            response["remainingCredits"] = credits_value
-        return response
-
-    async def _submit_video_text_via_extension_ui(
-        self,
-        *,
-        at: str,
-        token_id: int,
-        project_id: str,
-        prompt: str,
-        model_key: str,
-        aspect_ratio: str,
-    ) -> Dict[str, Any]:
-        if not self.db:
-            raise RuntimeError("Extension UI video text submit requires database access")
-
-        token_row = await self.db.get_token(token_id)
-        st_token = str(getattr(token_row, "st", "") or "").strip() if token_row else ""
-        if not st_token:
-            raise RuntimeError(f"Token {token_id} is missing ST; cannot discover UI-submitted text-to-video operations")
+            raise RuntimeError(f"Token {token_id} is missing ST; cannot discover workflow-submitted video operations")
 
         before_snapshot = await self.get_flow_project_initial_data(st_token, project_id)
         known_operations = self._collect_video_operations_from_project_snapshot(
@@ -3284,8 +2953,10 @@ class FlowClient:
             fallback_project_id=project_id,
         )
         debug_logger.log_info(
-            "[VIDEO UI WORKFLOW] route generate_video_text via extension workflow "
-            f"token_id={token_id} project_id={project_id} model_key={model_key} aspect_ratio={aspect_ratio}"
+            "[VIDEO UI WORKFLOW] submit via extension workflow "
+            f"token_id={token_id} project_id={project_id} model_key={model_key} aspect_ratio={aspect_ratio} "
+            f"workflow_mode={workflow_mode} preferred_submode={preferred_submode} "
+            f"reference_asset_count={len(reference_assets or [])}"
         )
 
         from .browser_captcha_extension import ExtensionCaptchaService
@@ -3296,15 +2967,21 @@ class FlowClient:
             aspect_ratio=aspect_ratio,
             outputs_per_prompt=1,
         )
+        normalized_reference_assets = [
+            dict(item)
+            for item in (reference_assets or [])
+            if isinstance(item, dict) and str(item.get("media_id") or "").strip()
+        ]
         ui_result = await service.dispatch_ui_job(
             token_id=token_id,
             job_type="video_ui_workflow",
             project_id=project_id,
             payload={
-                "workflow_mode": "text_to_video",
+                "workflow_mode": str(workflow_mode or "text_to_video").strip() or "text_to_video",
                 "activate_tab": True,
                 "prompt": str(prompt or ""),
-                "preferred_submode": "文本",
+                "preferred_submode": str(preferred_submode or "").strip() or "文本",
+                "reference_assets": normalized_reference_assets,
                 "desired_model_key": str(model_key or "").strip(),
                 "desired_model_display_name": video_ui_settings["desired_model_display_name"],
                 "desired_duration_seconds": video_ui_settings["desired_duration_seconds"],
@@ -3316,7 +2993,7 @@ class FlowClient:
         )
         if str(ui_result.get("status") or "").strip().lower() != "success":
             raise RuntimeError(
-                f"Extension workflow text submit failed: {ui_result.get('error') or ui_result.get('message') or ui_result}"
+                f"Extension workflow video submit failed: {ui_result.get('error') or ui_result.get('message') or ui_result}"
             )
 
         def _extract_workflow_state(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -3363,16 +3040,16 @@ class FlowClient:
             failure_kind, failure_detail = _classify_workflow_failure(workflow_state)
             if failure_kind == "abnormal_activity":
                 raise RuntimeError(
-                    "Extension workflow text submit blocked by upstream abnormal activity / risk control: "
+                    "Extension workflow video submit blocked by upstream abnormal activity / risk control: "
                     f"{failure_detail}; workflow_state={json.dumps(workflow_state, ensure_ascii=False)[:1600]}"
                 )
             if failure_kind == "generation_failed":
                 raise RuntimeError(
-                    "Extension workflow text submit returned upstream failure card: "
+                    "Extension workflow video submit returned upstream failure card: "
                     f"{failure_detail}; workflow_state={json.dumps(workflow_state, ensure_ascii=False)[:1600]}"
                 )
             raise RuntimeError(
-                "Extension workflow text submit returned unsuccessful state: "
+                "Extension workflow video submit returned unsuccessful state: "
                 f"workflow_state={json.dumps(workflow_state, ensure_ascii=False)[:1600]}; "
                 f"raw={json.dumps(ui_result, ensure_ascii=False)[:2200]}"
             )
@@ -3402,7 +3079,7 @@ class FlowClient:
             "ui_submit": {
                 "workflow_job_id": str(ui_result.get("job_id") or ""),
                 "status": str(ui_result.get("status") or ""),
-                "workflow_mode": "text_to_video",
+                "workflow_mode": str(workflow_mode or "text_to_video").strip() or "text_to_video",
             },
         }
         if credits_value is not None:
@@ -3419,7 +3096,6 @@ class FlowClient:
         model_key: str,
         aspect_ratio: str,
         source_media_id: str,
-        selected_material_index: Optional[int] = None,
         start_frame_index: Optional[int] = None,
         end_frame_index: Optional[int] = None,
         start_seconds: Optional[float] = None,
@@ -3450,20 +3126,16 @@ class FlowClient:
             aspect_ratio=aspect_ratio,
             outputs_per_prompt=1,
         )
-        resolved_material_index = (
-            int(selected_material_index)
-            if selected_material_index is not None
-            else self._find_reference_rank_from_project_snapshot(
-                before_snapshot,
-                source_media_id,
-                media_type=normalized_reference_media_kind,
-            )
-        )
+        normalized_reference_asset = {
+            "media_id": str(source_media_id or "").strip(),
+            "kind": normalized_reference_media_kind,
+            "mode": "attach",
+            "reference_texts": reference_texts,
+        }
         debug_logger.log_info(
             "[VIDEO UI WORKFLOW] route generate_video_edit via extension workflow "
             f"token_id={token_id} project_id={project_id} source_media_id={source_media_id} "
             f"reference_media_kind={normalized_reference_media_kind} "
-            f"selected_material_index={resolved_material_index} "
             f"start_frame_index={start_frame_index} end_frame_index={end_frame_index} "
             f"start_seconds={start_seconds} end_seconds={end_seconds} "
             f"source_duration_seconds={source_duration_seconds}"
@@ -3480,10 +3152,7 @@ class FlowClient:
                 "workflow_mode": "edit_existing_video",
                 "activate_tab": True,
                 "prompt": str(prompt or ""),
-                "reference_media_id": str(source_media_id or "").strip(),
-                "reference_media_kind": normalized_reference_media_kind,
-                "reference_texts": reference_texts,
-                "selected_material_index": resolved_material_index,
+                "reference_assets": [normalized_reference_asset],
                 "desired_start_frame_index": int(start_frame_index) if start_frame_index is not None else None,
                 "desired_end_frame_index": int(end_frame_index) if end_frame_index is not None else None,
                 "desired_start_seconds": float(start_seconds) if start_seconds is not None else None,
@@ -3673,16 +3342,18 @@ class FlowClient:
                 flush=True,
             )
             debug_logger.log_info(
-                f"[VIDEO UI SUBMIT] route generate_video_text via extension UI submit "
+                f"[VIDEO UI WORKFLOW] route generate_video_text via extension workflow "
                 f"token_id={token_id} project_id={project_id} model_key={model_key}"
             )
-            ui_submit_result = await self._submit_video_text_via_extension_ui(
+            ui_submit_result = await self._submit_video_via_extension_workflow(
                 at=at,
                 token_id=int(token_id),
                 project_id=project_id,
                 prompt=prompt,
                 model_key=model_key,
                 aspect_ratio=aspect_ratio,
+                preferred_submode="文本",
+                workflow_mode="text_to_video",
             )
             return self._normalize_video_generation_response(
                 ui_submit_result,
@@ -3972,7 +3643,7 @@ class FlowClient:
         model_key: str,
         aspect_ratio: str,
         reference_images: List[Dict],
-        selected_material_index: Optional[int] = None,
+        reference_assets: Optional[List[Dict[str, Any]]] = None,
         user_paygate_tier: str = "PAYGATE_TIER_ONE",
         token_id: Optional[int] = None,
         token_video_concurrency: Optional[int] = None,
@@ -3991,24 +3662,39 @@ class FlowClient:
         Returns:
             同 generate_video_text
         """
-        if config.captcha_method == "extension" and token_id and self.db and len(reference_images or []) == 1:
-            source_media_id = str((reference_images or [{}])[0].get("mediaId") or "").strip()
-            if source_media_id:
+        if config.captcha_method == "extension" and token_id and self.db:
+            normalized_reference_assets = [
+                dict(item)
+                for item in (reference_assets or [])
+                if isinstance(item, dict) and str(item.get("media_id") or "").strip()
+            ]
+            if not normalized_reference_assets:
+                normalized_reference_assets = [
+                    {
+                        "media_id": str(item.get("mediaId") or "").strip(),
+                        "kind": "image",
+                        "mode": "mention",
+                        "reference_texts": [],
+                    }
+                    for item in (reference_images or [])
+                    if isinstance(item, dict) and str(item.get("mediaId") or "").strip()
+                ]
+            if normalized_reference_assets:
                 debug_logger.log_info(
-                    f"[VIDEO UI SUBMIT] route generate_video_reference_images via extension UI submit "
+                    f"[VIDEO UI WORKFLOW] route generate_video_reference_images via extension workflow "
                     f"token_id={token_id} project_id={project_id} model_key={model_key} "
-                    f"source_media_id={source_media_id}"
+                    f"reference_asset_count={len(normalized_reference_assets)}"
                 )
-                ui_submit_result = await self._submit_video_edit_via_extension_ui(
+                ui_submit_result = await self._submit_video_via_extension_workflow(
                     at=at,
                     token_id=int(token_id),
                     project_id=project_id,
                     prompt=prompt,
                     model_key=model_key,
                     aspect_ratio=aspect_ratio,
-                    source_media_id=source_media_id,
-                    selected_material_index=selected_material_index,
-                    reference_media_kind="image",
+                    reference_assets=normalized_reference_assets,
+                    preferred_submode="参考",
+                    workflow_mode="text_to_video",
                 )
                 return self._normalize_video_generation_response(
                     ui_submit_result,
@@ -4266,7 +3952,6 @@ class FlowClient:
         model_key: str,
         aspect_ratio: str,
         start_media_id: str,
-        selected_material_index: Optional[int] = None,
         use_v2_model_config: bool = False,
         user_paygate_tier: str = "PAYGATE_TIER_ONE",
         token_id: Optional[int] = None,
@@ -4300,7 +3985,6 @@ class FlowClient:
                 model_key=model_key,
                 aspect_ratio=aspect_ratio,
                 source_media_id=start_media_id,
-                selected_material_index=selected_material_index,
                 reference_media_kind="image",
             )
             return self._normalize_video_generation_response(
@@ -4553,7 +4237,6 @@ class FlowClient:
         model_key: str,
         aspect_ratio: str,
         video_media_id: str,
-        selected_material_index: Optional[int] = None,
         start_frame_index: Optional[int] = None,
         end_frame_index: Optional[int] = None,
         start_seconds: Optional[float] = None,
@@ -4578,7 +4261,6 @@ class FlowClient:
                 model_key=model_key,
                 aspect_ratio=aspect_ratio,
                 source_media_id=video_media_id,
-                selected_material_index=int(selected_material_index) if selected_material_index is not None else None,
                 start_frame_index=int(start_frame_index) if start_frame_index is not None else None,
                 end_frame_index=int(end_frame_index) if end_frame_index is not None else None,
                 start_seconds=float(start_seconds) if start_seconds is not None else None,

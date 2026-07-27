@@ -8,7 +8,7 @@
 
 - 后端运行在 Docker 容器中
 - 验证码/高风控链路使用 `extension` 或 `personal`
-- 需要时由宿主机 Chrome 配合扩展完成 UI 自动化
+- 需要时由宿主机 `Chrome for Testing` 配合扩展完成 UI 自动化
 - 使用 `docker-compose.headed.yml`
 
 如果你准备在新机器上恢复完整自动化能力，建议直接沿用这套方式。
@@ -17,11 +17,11 @@
 
 建议准备以下环境：
 
-- macOS
+- macOS 或 Windows
 - Git
 - Docker Desktop
 - Python 3.11 或至少 Python 3.10+
-- Google Chrome
+- Chrome for Testing
 
 当前仓库里“宿主机浏览器启动桥”原生提供了 macOS 的 `launchd` 方案；Windows 侧请直接使用启动脚本，见：
 
@@ -120,6 +120,14 @@ docker compose -f docker-compose.headed.yml up -d --build
 docker compose -f docker-compose.headed.yml up -d --build
 ```
 
+如果只是改了 `src/`、`static/`、`extension/` 这类当前已 bind mount 的目录，通常不需要重新 build，直接重启容器即可：
+
+```bash
+docker compose -f docker-compose.headed.yml restart
+```
+
+只有镜像层依赖变更，例如 `Dockerfile.headed`、系统包、Python 依赖安装逻辑变化时，才优先考虑重新 build。
+
 查看日志：
 
 ```bash
@@ -165,14 +173,21 @@ scripts\start_host_bridge_windows.cmd
 - 启动 host bridge
 - 把日志写到 `tmp\host-bridge\`
 
-如果自动探测不到 Chrome，先在当前终端里显式指定浏览器路径，再启动：
+如果自动探测不到 `Chrome for Testing`，先在当前终端里显式指定浏览器路径，再启动：
 
 ```cmd
-set FLOW2API_CHROME_PATH=C:\Users\%USERNAME%\AppData\Local\Google\Chrome for Testing\Application\chrome.exe
+set "FLOW2API_CHROME_PATH=C:\Users\%USERNAME%\AppData\Local\Google\Chrome for Testing\chrome.exe"
 scripts\start_host_bridge_windows.cmd
 ```
 
 这个方案会保留一个 `cmd` 窗口；那个窗口就是 host bridge 进程本身，关闭后服务也会停止。
+
+如果你的安装路径是 `Application` 子目录，再改用：
+
+```cmd
+set "FLOW2API_CHROME_PATH=C:\Users\%USERNAME%\AppData\Local\Google\Chrome for Testing\Application\chrome.exe"
+scripts\start_host_bridge_windows.cmd
+```
 
 ### 5.3 验证
 
@@ -220,29 +235,38 @@ curl http://127.0.0.1:8765/health
 
 ### 6.2 扩展需要配置什么
 
-扩展选项页需要填写：
+要分两种情况理解：
+
+1. 后台通过“启动浏览器”自动拉起 per-token 浏览器
+2. 你自己手工加载 `extension/` 做常驻 worker
+
+对于第 1 种，当前启动器会为每个 token 生成独立扩展目录，并写入 `bootstrap-settings.json`。
+
+因此：
+
+- `serverUrl`
+- `apiKey`
+- `routeKey`
+- `clientLabel`
+
+通常会自动带入，不是必须手工逐项填写。
+
+对应实现见 [browser_profile_launcher.py](file:///Users/baolei/workspace/gflow-proxy-server/scripts/browser_profile_launcher.py#L299-L355) 和 [options.js](file:///Users/baolei/workspace/gflow-proxy-server/extension/options.js#L21-L59)。
+
+对于第 2 种，也就是你手工加载仓库根目录下的 `extension/`，仍然需要自己在扩展选项页填写：
 
 - `Route Key`
 - `Client Label`
 - `WebSocket URL`
 - `Flow2API API Key`
 
-对应页面：
-
-- [options.html](file:///Users/baolei/workspace/gflow-proxy-server/extension/options.html)
-- [options.js](file:///Users/baolei/workspace/gflow-proxy-server/extension/options.js)
-
-默认 WebSocket 地址是：
+默认 WebSocket 地址：
 
 ```text
 ws://127.0.0.1:8000/captcha_ws
 ```
 
-如果你的服务不是跑在本机，记得改成对应地址。
-
-`Flow2API API Key` 取自：
-
-- `config/setting.toml` 的 `global.api_key`
+`Flow2API API Key` 取自 `config/setting.toml` 的 `global.api_key`。
 
 ### 6.3 Route Key 怎么理解
 
@@ -273,7 +297,6 @@ ws://127.0.0.1:8000/captcha_ws
 首次登录后建议马上确认：
 - API Key 是否正确
 - 打码方式是否符合你的部署方式
-- 打码方式是否符合你的部署方式
 - 调度策略是否符合你的预期
 
 ## 8. 从零部署后要补哪些初始化动作
@@ -296,8 +319,8 @@ ws://127.0.0.1:8000/captcha_ws
 - 为账号准备 browser profile
 - 启动浏览器
 - 在浏览器里完成登录
-- 给对应浏览器实例配置扩展 `Route Key`
-- 在后台 token 上填同样的 `Route Key`
+- 如果是手工加载扩展，再给对应浏览器实例配置 `Route Key`
+- 如果是后台自动拉起 per-token 浏览器，`Route Key` 通常由启动器自动写入扩展副本
 
 ### 8.3 视你的场景决定是否必须用扩展
 
@@ -310,7 +333,6 @@ ws://127.0.0.1:8000/captcha_ws
 那扩展和浏览器链路就是必需的。
 
 如果你只是先把服务跑起来，不急着恢复这些功能，可以先只完成后端部署。
-## 9. 如果你使用当前这套自动化链路，建议这样验收
 ## 9. 如果你使用当前这套自动化链路，建议这样验收
 ### 9.1 服务侧
 
@@ -347,10 +369,11 @@ tail -f tmp/host-bridge/stderr.log
 确认：
 
 - 扩展已加载
-- 扩展配置已保存
+- 如果是手工扩展，扩展配置已保存
 - `serverUrl` 指向正确的 `captcha_ws`
 - `apiKey` 与服务配置一致
-- `Route Key` 已和后台 token 对齐
+- 如果是手工扩展，`Route Key` 已和后台 token 对齐
+- 如果是后台自动拉起浏览器，确认加载的是 per-token 扩展副本，而不是旧的手工扩展目录
 
 ### 9.4 页面级验证
 
@@ -392,8 +415,9 @@ tail -f tmp/host-bridge/stderr.log
 
 - host bridge 是否已安装并在线
 - `docker-compose.headed.yml` 里的 `FLOW2API_BROWSER_LAUNCH_HOST_URL` 是否正确
-- 宿主机是否能正常拉起 Chrome
-- Windows 下如果提示“未找到可用的 Chrome for Testing”，请先执行 `set FLOW2API_CHROME_PATH=<Chrome for Testing 的 chrome.exe 路径>`，再运行 `scripts\start_host_bridge_windows.cmd`
+- 宿主机是否能正常拉起 `Chrome for Testing`
+- 当前 host bridge 是否已经重启到最新代码
+- Windows 下如果提示“未找到可用的 Chrome for Testing”，请先执行 `set "FLOW2API_CHROME_PATH=<Chrome for Testing 的 chrome.exe 路径>"`，再运行 `scripts\start_host_bridge_windows.cmd`
 
 ### 10.4 只是想先把服务起起来，不接浏览器自动化
 
@@ -445,7 +469,7 @@ curl http://127.0.0.1:8000/health
 然后：
 
 1. 在 Chrome 加载 `extension/`
-2. 配置扩展的 `serverUrl/apiKey/routeKey`
+2. 如果是手工扩展，再配置 `serverUrl/apiKey/routeKey`
 3. 登录 `http://127.0.0.1:8000/manage`
 4. 在后台添加或导入 token
 5. 验证 worker、浏览器自动化链路

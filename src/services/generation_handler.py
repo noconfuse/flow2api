@@ -1092,6 +1092,78 @@ class GenerationHandler:
             "base_url": None,
         }
 
+    async def _read_reference_asset_bytes(self, asset: Dict[str, Any], *, expected_kind: str) -> bytes:
+        source_url = str(asset.get("source_url") or "").strip()
+        file_path_text = str(asset.get("file_path") or "").strip()
+        file_name = str(asset.get("file_name") or "").strip() or expected_kind
+        if source_url:
+            cached_name = await self.file_cache.download_and_cache(source_url, expected_kind)
+            if not cached_name:
+                raise RuntimeError(f"引用素材下载失败: {file_name or source_url}")
+            cache_dir = Path(getattr(self.file_cache, "cache_dir", "tmp"))
+            cached_path = cache_dir / cached_name
+            if not cached_path.exists() or not cached_path.is_file():
+                raise RuntimeError(f"引用素材缓存文件不存在: {file_name or source_url}")
+            content = cached_path.read_bytes()
+            if not content:
+                raise RuntimeError(f"引用素材文件为空: {file_name or source_url}")
+            return content
+        if not file_path_text:
+            raise RuntimeError(f"引用素材缺少可读取来源: {file_name}")
+        file_path = Path(file_path_text)
+        if not file_path.exists() or not file_path.is_file():
+            raise RuntimeError(f"引用素材文件不存在: {file_name}")
+        content = file_path.read_bytes()
+        if not content:
+            raise RuntimeError(f"引用素材文件为空: {file_name}")
+        return content
+
+    async def _materialize_reference_assets(
+        self,
+        token,
+        project_id: str,
+        aspect_ratio: str,
+        reference_assets: Optional[List[Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        materialized: List[Dict[str, Any]] = []
+        for raw_asset in (reference_assets or []):
+            if not isinstance(raw_asset, dict):
+                continue
+            asset = dict(raw_asset)
+            media_id = str(asset.get("media_id") or "").strip()
+            asset_kind = str(asset.get("kind") or asset.get("asset_kind") or "").strip().lower()
+            if asset_kind not in {"image", "video"}:
+                continue
+            if not media_id:
+                file_bytes = await self._read_reference_asset_bytes(asset, expected_kind=asset_kind)
+                if asset_kind == "image":
+                    media_id = await self.flow_client.upload_image(
+                        token.at,
+                        file_bytes,
+                        aspect_ratio,
+                        project_id=project_id,
+                        token_id=token.id,
+                    )
+                else:
+                    media_id = await self.flow_client.upload_video(
+                        video_bytes=file_bytes,
+                        file_name=str(asset.get("file_name") or "").strip() or "reference-video",
+                        project_id=project_id,
+                        token_id=token.id,
+                        mime_type=str(asset.get("mime_type") or asset.get("content_type") or "").strip() or None,
+                    )
+            asset["media_id"] = str(media_id or "").strip()
+            asset["kind"] = asset_kind
+            asset["mode"] = str(asset.get("mode") or "attach").strip() or "attach"
+            asset["reference_texts"] = [
+                str(item or "").strip()
+                for item in (asset.get("reference_texts") or [])
+                if str(item or "").strip()
+            ]
+            if asset["media_id"]:
+                materialized.append(asset)
+        return materialized
+
     def _find_nested_string(self, value: Any, keys: tuple[str, ...]) -> Optional[str]:
         if isinstance(value, dict):
             for key in keys:
@@ -1430,10 +1502,13 @@ class GenerationHandler:
         base_url_override: Optional[str] = None,
         video_media_id: Optional[str] = None,
         video_edit_params: Optional[Dict[str, Any]] = None,
+        video_edit_input: Optional[Dict[str, Any]] = None,
         preferred_token_id: Optional[int] = None,
         preferred_project_id: Optional[str] = None,
+        excluded_token_ids: Optional[List[int]] = None,
         source_image_media_ids: Optional[List[str]] = None,
-        source_image_selected_material_index: Optional[int] = None,
+        reference_assets: Optional[List[Dict[str, Any]]] = None,
+        include_internal_payload: bool = False,
     ) -> AsyncGenerator:
         """统一生成入口
 
@@ -1487,8 +1562,10 @@ class GenerationHandler:
             "has_images": images is not None and len(images) > 0,
             "preferred_token_id": preferred_token_id,
             "preferred_project_id": preferred_project_id,
+            "excluded_token_ids": excluded_token_ids or [],
             "source_image_media_ids": source_image_media_ids or [],
-            "source_image_selected_material_index": source_image_selected_material_index,
+            "reference_assets": reference_assets or [],
+            "has_video_edit_input": bool(video_edit_input),
         }
         debug_logger.log_info(f"[GENERATION] 开始生成 - 模型: {model}, 类型: {generation_type}, Prompt: {prompt[:50]}...")
 
@@ -1521,6 +1598,7 @@ class GenerationHandler:
                 enforce_concurrency_filter=False,
                 track_pending=True,
                 preferred_token_id=preferred_token_id,
+                excluded_token_ids=excluded_token_ids,
             )
         else:
             token = await self.load_balancer.select_token(
@@ -1530,6 +1608,7 @@ class GenerationHandler:
                 enforce_concurrency_filter=False,
                 track_pending=True,
                 preferred_token_id=preferred_token_id,
+                excluded_token_ids=excluded_token_ids,
             )
         perf_trace["token_select_ms"] = int((time.time() - token_select_started_at) * 1000)
 
@@ -1569,6 +1648,7 @@ class GenerationHandler:
                     for_image_generation=(generation_type == "image"),
                     for_video_generation=(generation_type == "video"),
                     model=model,
+                    excluded_token_ids=excluded_token_ids,
                 )
             if not error_msg:
                 error_msg = self._get_no_token_error_message(generation_type)
@@ -1684,7 +1764,8 @@ class GenerationHandler:
                     generation_result=generation_result,
                     response_state=response_state,
                     request_log_state=request_log_state,
-                    pending_token_state=pending_token_state
+                    pending_token_state=pending_token_state,
+                    include_internal_payload=include_internal_payload,
                 ):
                     yield chunk
             else:  # video
@@ -1698,8 +1779,10 @@ class GenerationHandler:
                     pending_token_state=pending_token_state,
                     video_media_id=video_media_id,
                     video_edit_params=video_edit_params,
+                    video_edit_input=video_edit_input,
                     source_image_media_ids=source_image_media_ids,
-                    source_image_selected_material_index=source_image_selected_material_index,
+                    reference_assets=reference_assets,
+                    include_internal_payload=include_internal_payload,
                 ):
                     yield chunk
             perf_trace["generation_pipeline_ms"] = int((time.time() - generation_pipeline_started_at) * 1000)
@@ -1866,7 +1949,8 @@ class GenerationHandler:
         generation_result: Optional[Dict[str, Any]] = None,
         response_state: Optional[Dict[str, Any]] = None,
         request_log_state: Optional[Dict[str, Any]] = None,
-        pending_token_state: Optional[Dict[str, bool]] = None
+        pending_token_state: Optional[Dict[str, bool]] = None,
+        include_internal_payload: bool = False,
     ) -> AsyncGenerator:
         """处理图片生成 (同步返回)"""
 
@@ -2033,7 +2117,13 @@ class GenerationHandler:
                                 else:
                                     yield self._create_completion_response(
                                         local_url,
-                                        media_type="image"
+                                        media_type="image",
+                                        extra_payload={
+                                            "url": response_state.get("url"),
+                                            "generated_assets": response_state.get("generated_assets"),
+                                            "token_id": token.id,
+                                            "project_id": project_id,
+                                        } if include_internal_payload else None,
                                     )
                                 if image_trace is not None:
                                     image_trace["upsample_ms"] = int((time.time() - upsample_started_at) * 1000)
@@ -2056,7 +2146,13 @@ class GenerationHandler:
                                 else:
                                     yield self._create_completion_response(
                                         base64_url,
-                                        media_type="image"
+                                        media_type="image",
+                                        extra_payload={
+                                            "url": response_state.get("url") or base64_url,
+                                            "generated_assets": response_state.get("generated_assets"),
+                                            "token_id": token.id,
+                                            "project_id": project_id,
+                                        } if include_internal_payload else None,
                                     )
                                 if image_trace is not None:
                                     image_trace["upsample_ms"] = int((time.time() - upsample_started_at) * 1000)
@@ -2131,7 +2227,13 @@ class GenerationHandler:
             else:
                 yield self._create_completion_response(
                     local_url,  # 直接传URL,让方法内部格式化
-                    media_type="image"
+                    media_type="image",
+                    extra_payload={
+                        "url": response_state.get("url"),
+                        "generated_assets": response_state.get("generated_assets"),
+                        "token_id": token.id,
+                        "project_id": project_id,
+                    } if include_internal_payload else None,
                 )
 
         finally:
@@ -2152,8 +2254,10 @@ class GenerationHandler:
         pending_token_state: Optional[Dict[str, bool]] = None,
         video_media_id: Optional[str] = None,
         video_edit_params: Optional[Dict[str, Any]] = None,
+        video_edit_input: Optional[Dict[str, Any]] = None,
         source_image_media_ids: Optional[List[str]] = None,
-        source_image_selected_material_index: Optional[int] = None,
+        reference_assets: Optional[List[Dict[str, Any]]] = None,
+        include_internal_payload: bool = False,
     ) -> AsyncGenerator:
         """处理视频生成 (异步轮询)"""
 
@@ -2203,6 +2307,23 @@ class GenerationHandler:
                 for media_id in (source_image_media_ids or [])
                 if str(media_id or "").strip()
             ]
+            reference_assets = await self._materialize_reference_assets(
+                token,
+                project_id,
+                model_config["aspect_ratio"],
+                reference_assets,
+            )
+            reference_image_assets = [
+                asset
+                for asset in reference_assets
+                if str(asset.get("kind") or "").strip().lower() == "image" and str(asset.get("media_id") or "").strip()
+            ]
+            if reference_image_assets:
+                source_image_media_ids = [
+                    str(asset.get("media_id") or "").strip()
+                    for asset in reference_image_assets
+                    if str(asset.get("media_id") or "").strip()
+                ]
             source_image_count = len(source_image_media_ids)
 
             # ========== 验证和处理图片 ==========
@@ -2354,11 +2475,6 @@ class GenerationHandler:
                         model_key=actual_model_key,
                         aspect_ratio=model_config["aspect_ratio"],
                         start_media_id=start_media_id,
-                        selected_material_index=(
-                            int(source_image_selected_material_index)
-                            if source_image_selected_material_index is not None
-                            else None
-                        ),
                         use_v2_model_config=use_v2_model_config,
                         user_paygate_tier=normalized_tier,
                         token_id=token.id,
@@ -2374,11 +2490,7 @@ class GenerationHandler:
                     model_key=model_config["model_key"],
                     aspect_ratio=model_config["aspect_ratio"],
                     reference_images=reference_images,
-                    selected_material_index=(
-                        int(source_image_selected_material_index)
-                        if source_image_selected_material_index is not None
-                        else None
-                    ),
+                    reference_assets=reference_assets,
                     user_paygate_tier=normalized_tier,
                     token_id=token.id,
                     token_video_concurrency=token.video_concurrency,
@@ -2423,9 +2535,35 @@ class GenerationHandler:
                     return
 
                 edit_media_id = str(video_edit_params.get("media_id") or "").strip()
+                if not edit_media_id and isinstance(video_edit_input, dict):
+                    video_bytes = video_edit_input.get("video_bytes")
+                    upload_file_name = str(video_edit_input.get("file_name") or "").strip()
+                    mime_type = str(video_edit_input.get("content_type") or video_edit_input.get("mime_type") or "").strip() or None
+                    if not isinstance(video_bytes, (bytes, bytearray)) or not video_bytes:
+                        error_msg = "❌ 视频编辑上传源文件为空"
+                        if stream:
+                            yield self._create_stream_chunk(f"{error_msg}\n")
+                        self._mark_generation_failed(generation_result, error_msg)
+                        yield self._create_error_response(error_msg, status_code=400)
+                        return
+                    if not upload_file_name:
+                        error_msg = "❌ 视频编辑上传源文件名不能为空"
+                        if stream:
+                            yield self._create_stream_chunk(f"{error_msg}\n")
+                        self._mark_generation_failed(generation_result, error_msg)
+                        yield self._create_error_response(error_msg, status_code=400)
+                        return
+                    if stream:
+                        yield self._create_stream_chunk(f"上传视频编辑源文件: {upload_file_name}\n")
+                    edit_media_id = await self.flow_client.upload_video(
+                        video_bytes=bytes(video_bytes),
+                        file_name=upload_file_name,
+                        project_id=project_id,
+                        token_id=token.id,
+                        mime_type=mime_type,
+                    )
                 start_frame_index = video_edit_params.get("start_frame_index")
                 end_frame_index = video_edit_params.get("end_frame_index")
-                selected_material_index = video_edit_params.get("selected_material_index")
                 start_seconds = video_edit_params.get("start_seconds")
                 end_seconds = video_edit_params.get("end_seconds")
                 source_duration_seconds = video_edit_params.get("source_duration_seconds")
@@ -2449,7 +2587,6 @@ class GenerationHandler:
 
                 debug_logger.log_info(
                     f"[VIDEO EDIT] 编辑视频: media_id={edit_media_id}, "
-                    f"selected_material_index={selected_material_index}, "
                     f"time={start_seconds}-{end_seconds}, frames={start_frame_index}-{end_frame_index}, "
                     f"source_duration={source_duration_seconds}"
                 )
@@ -2462,7 +2599,6 @@ class GenerationHandler:
                     project_id=project_id,
                     prompt=prompt,
                     video_media_id=edit_media_id,
-                    selected_material_index=int(selected_material_index) if selected_material_index is not None else None,
                     model_key=model_config["model_key"],
                     aspect_ratio=model_config["aspect_ratio"],
                     start_frame_index=int(start_frame_index) if start_frame_index is not None else None,
@@ -2539,6 +2675,7 @@ class GenerationHandler:
                 response_state,
                 request_log_state,
                 extend_source_media_id=extend_source_id,
+                include_internal_payload=include_internal_payload,
             ):
                 yield chunk
 
@@ -2556,6 +2693,7 @@ class GenerationHandler:
         response_state: Optional[Dict[str, Any]] = None,
         request_log_state: Optional[Dict[str, Any]] = None,
         extend_source_media_id: Optional[str] = None,
+        include_internal_payload: bool = False,
     ) -> AsyncGenerator:
         """轮询视频生成结果
         
@@ -2719,6 +2857,7 @@ class GenerationHandler:
                                     generation_result,
                                     response_state,
                                     request_log_state,
+                                    include_internal_payload=include_internal_payload,
                                 ):
                                     yield chunk
                                 return
@@ -2838,7 +2977,13 @@ class GenerationHandler:
                     else:
                         yield self._create_completion_response(
                             local_url,  # 直接传URL,让方法内部格式化
-                            media_type="video"
+                            media_type="video",
+                            extra_payload={
+                                "url": response_state.get("url"),
+                                "generated_assets": response_state.get("generated_assets"),
+                                "token_id": token.id,
+                                "project_id": project_id,
+                            } if include_internal_payload else None,
                         )
                     return
 
@@ -2859,7 +3004,14 @@ class GenerationHandler:
                     self._mark_generation_failed(generation_result, friendly_error)
                     if stream:
                         yield self._create_stream_chunk(f"❌ {friendly_error}\n")
-                    yield self._create_error_response(friendly_error, status_code=502)
+                    yield self._create_error_response(
+                        friendly_error,
+                        status_code=502,
+                        extra_payload={
+                            "token_id": token.id,
+                            "project_id": project_id,
+                        } if include_internal_payload else None,
+                    )
                     return
 
                 elif status.startswith("MEDIA_GENERATION_STATUS_ERROR"):
@@ -2867,7 +3019,14 @@ class GenerationHandler:
                     error_msg = f"视频生成失败: {status}"
                     await self._fail_video_task(checked_operations, error_msg)
                     self._mark_generation_failed(generation_result, error_msg)
-                    yield self._create_error_response(error_msg, status_code=502)
+                    yield self._create_error_response(
+                        error_msg,
+                        status_code=502,
+                        extra_payload={
+                            "token_id": token.id,
+                            "project_id": project_id,
+                        } if include_internal_payload else None,
+                    )
                     return
                     
                 elif status == "MEDIA_GENERATION_STATUS_ACTIVE" and attempt > 80:
@@ -2877,7 +3036,14 @@ class GenerationHandler:
                     self._mark_generation_failed(generation_result, error_msg)
                     if stream:
                         yield self._create_stream_chunk(f"❌ {error_msg}\n")
-                    yield self._create_error_response(error_msg, status_code=504)
+                    yield self._create_error_response(
+                        error_msg,
+                        status_code=504,
+                        extra_payload={
+                            "token_id": token.id,
+                            "project_id": project_id,
+                        } if include_internal_payload else None,
+                    )
                     return
 
             except Exception as e:
@@ -2890,7 +3056,14 @@ class GenerationHandler:
                     self._mark_generation_failed(generation_result, error_msg)
                     if stream:
                         yield self._create_stream_chunk(f"❌ {error_msg}\n")
-                    yield self._create_error_response(error_msg, status_code=502)
+                    yield self._create_error_response(
+                        error_msg,
+                        status_code=502,
+                        extra_payload={
+                            "token_id": token.id,
+                            "project_id": project_id,
+                        } if include_internal_payload else None,
+                    )
                     return
                 continue
 
@@ -2901,7 +3074,14 @@ class GenerationHandler:
             error_msg = f"视频生成超时 (已轮询 {max_attempts} 次)"
         await self._fail_video_task(operations, error_msg)
         self._mark_generation_failed(generation_result, error_msg)
-        yield self._create_error_response(error_msg, status_code=504)
+        yield self._create_error_response(
+            error_msg,
+            status_code=504,
+            extra_payload={
+                "token_id": token.id,
+                "project_id": project_id,
+            } if include_internal_payload else None,
+        )
 
     # ========== 响应格式化 ==========
 
@@ -2932,7 +3112,13 @@ class GenerationHandler:
 
         return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
-    def _create_completion_response(self, content: str, media_type: str = "image", is_availability_check: bool = False) -> str:
+    def _create_completion_response(
+        self,
+        content: str,
+        media_type: str = "image",
+        is_availability_check: bool = False,
+        extra_payload: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """创建非流式响应
 
         Args:
@@ -2970,10 +3156,19 @@ class GenerationHandler:
                 "finish_reason": "stop"
             }]
         }
+        if isinstance(extra_payload, dict):
+            for key, value in extra_payload.items():
+                if value is not None:
+                    response[key] = value
 
         return json.dumps(response, ensure_ascii=False)
 
-    def _create_error_response(self, error_message: str, status_code: int = 500) -> str:
+    def _create_error_response(
+        self,
+        error_message: str,
+        status_code: int = 500,
+        extra_payload: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """创建错误响应"""
         import json
 
@@ -2985,6 +3180,10 @@ class GenerationHandler:
                 "status_code": status_code,
             }
         }
+        if isinstance(extra_payload, dict):
+            for key, value in extra_payload.items():
+                if value is not None:
+                    error[key] = value
 
         return json.dumps(error, ensure_ascii=False)
 
