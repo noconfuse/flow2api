@@ -42,11 +42,17 @@ EXPECTED_COLUMNS = [
     "image_5",
     "video_1",
     "video_2",
+    "image_source",
 ]
 SUPPORTED_TASK_TYPES = {"video", "edit", "image"}
 IMAGE_SLOTS = [f"image_{index}" for index in range(1, 6)]
 VIDEO_SLOTS = [f"video_{index}" for index in range(1, 3)]
-SLOT_REF_RE = re.compile(r"@(?P<slot>image_[1-5]|video_[1-2])\b", re.IGNORECASE)
+DYNAMIC_IMAGE_SLOTS = ["image_source"]
+SLOT_REF_RE = re.compile(
+    r"@(?P<slot>image_[1-5]|video_[1-2]|image_source)\b",
+    re.IGNORECASE,
+)
+ROW_DEPENDENCY_RE = re.compile(r"^row:(?P<row_key>[A-Za-z0-9_\-]+)$", re.IGNORECASE)
 TASKS_SHEET_NAME = "Tasks"
 OPTIONS_SHEET_NAME = "Options"
 DEFAULT_DURATION_OPTIONS = ["4s", "6s", "8s", "10s"]
@@ -347,6 +353,38 @@ def _read_media_cell(cell: Any) -> Optional[str]:
     return _normalize_cell(cell.value)
 
 
+def _build_media_merged_fill_map(
+    sheet: Any,
+    *,
+    media_columns: Set[int],
+) -> Dict[Tuple[int, int], int]:
+    """建立“合并区域内的格子 -> 左上角行号”的映射。
+
+    仅对图片/视频列生效：Excel 中这些列允许纵向合并单元格，
+    被合并的行 (row) 单元格实际 value 为 None，但需要继承合并区域左上角的内容。
+    """
+    fill_map: Dict[Tuple[int, int], int] = {}
+    for cell_range in getattr(sheet, "merged_cells", {}).ranges:
+        min_col, min_row, max_col, max_row = (
+            cell_range.min_col,
+            cell_range.min_row,
+            cell_range.max_col,
+            cell_range.max_row,
+        )
+        if min_row < 2:
+            # 表头行不参与填充映射
+            continue
+        if max_col - min_col != 0:
+            # 不处理横向合并；只把纵向合并向下填充
+            continue
+        col_index = min_col
+        if col_index not in media_columns:
+            continue
+        for row_index in range(min_row + 1, max_row + 1):
+            fill_map[(row_index, col_index)] = min_row
+    return fill_map
+
+
 def _build_media_entry(
     reference: Optional[str],
     expected_kind: str,
@@ -444,12 +482,29 @@ def _build_reference_asset_specs(
     return specs
 
 
-def _validate_prompt_refs(prompt: str, slot_entries: Dict[str, Dict[str, Any]], parsed: ParsedBatchItem) -> Set[str]:
+def _validate_prompt_refs(
+    prompt: str,
+    slot_entries: Dict[str, Dict[str, Any]],
+    parsed: ParsedBatchItem,
+    dynamic_slot_names: Optional[set[str]] = None,
+) -> Set[str]:
     prompt_slots = _extract_slot_refs(prompt)
+    dynamic_set = set(dynamic_slot_names or [])
     for slot_name in sorted(prompt_slots):
-        if slot_name not in slot_entries:
+        if slot_name not in slot_entries and slot_name not in dynamic_set:
             parsed.errors.append(_error("missing_prompt_slot", f"prompt 引用了未填写的素材槽位: @{slot_name}"))
     return prompt_slots
+
+
+def _parse_image_source_dependency(value: Optional[str], parsed: ParsedBatchItem) -> Optional[Dict[str, Any]]:
+    raw = _normalize_cell(value)
+    if not raw:
+        return None
+    match = ROW_DEPENDENCY_RE.match(raw)
+    if not match:
+        parsed.warnings.append(_error("ignored_image_source_dependency", "image_source 仅支持 row:<row_key> 格式"))
+        return None
+    return {"row_key": str(match.group("row_key") or "").strip()}
 
 
 def _get_batch_option_catalog() -> List[Dict[str, Any]]:
@@ -603,13 +658,13 @@ def _build_template_bytes() -> bytes:
 
     widths = {
         "A": 14, "B": 26, "C": 12, "D": 14, "E": 44,
-        "F": 28, "G": 28, "H": 28, "I": 28, "J": 28, "K": 28, "L": 28,
+        "F": 28, "G": 28, "H": 28, "I": 28, "J": 28, "K": 28, "L": 28, "M": 28,
     }
     for column_name, width in widths.items():
         tasks_sheet.column_dimensions[column_name].width = width
     tasks_sheet.freeze_panes = "A2"
     options_sheet["F1"] = "说明"
-    options_sheet["F2"] = "task_type 用于选择任务类型；视频生成/视频编辑必须明确选择时长；image_* / video_* 支持填写远程 URL，或把媒体嵌入到对应槽位单元格；prompt 可引用 @image_1 ~ @video_2。"
+    options_sheet["F2"] = "task_type 用于选择任务类型；视频生成/视频编辑必须明确选择时长；image_* / video_* 支持填写远程 URL，或把媒体嵌入到对应槽位单元格；prompt 可引用 @image_1 ~ @video_2；image_source 列填写 row:<row_key> 时，prompt 中必须包含 @image_source 占位引用该列；后端会自动取同批次中对应行生成视频的最后一帧作为 image_source。"
 
     buffer = io.BytesIO()
     workbook.save(buffer)
@@ -639,6 +694,12 @@ def _parse_excel_rows(raw_bytes: bytes) -> Tuple[List[str], List[ParsedBatchItem
         raise HTTPException(status_code=400, detail=f"Excel 缺少必要列: {', '.join(missing_columns)}")
 
     column_index_map = {column: columns.index(column) + 1 for column in EXPECTED_COLUMNS}
+    media_column_indexes: Set[int] = {
+        column_index_map[column]
+        for column in (*IMAGE_SLOTS, *VIDEO_SLOTS)
+        if column in column_index_map
+    }
+    media_merged_fill_map = _build_media_merged_fill_map(sheet, media_columns=media_column_indexes)
     items: List[ParsedBatchItem] = []
     logical_row_index = 0
 
@@ -649,12 +710,26 @@ def _parse_excel_rows(raw_bytes: bytes) -> Tuple[List[str], List[ParsedBatchItem
         for column in EXPECTED_COLUMNS:
             column_index = column_index_map[column]
             cell = sheet.cell(row=excel_row, column=column_index)
-            embedded_entry = embedded_media_map.get((excel_row, column_index))
-            value = _read_media_cell(cell) if column in (*IMAGE_SLOTS, *VIDEO_SLOTS) else _normalize_cell(cell.value)
+            is_media_column = column in (*IMAGE_SLOTS, *VIDEO_SLOTS)
+
+            # 处理 image/video 列的纵向合并单元格：被合并的行 (row, col) 实际上 value 为 None，
+            # 需要回退到合并区域左上角的格子，从而让多行复用同一张图。
+            effective_row = excel_row
+            if is_media_column:
+                anchor_row = media_merged_fill_map.get((excel_row, column_index))
+                if anchor_row:
+                    effective_row = anchor_row
+
+            embedded_entry = embedded_media_map.get((effective_row, column_index))
+            if not embedded_entry and is_media_column and effective_row != excel_row:
+                embedded_entry = embedded_media_map.get((excel_row, column_index))
+
+            value_cell = sheet.cell(row=effective_row, column=column_index)
+            value = _read_media_cell(value_cell) if is_media_column else _normalize_cell(value_cell.value)
             if embedded_entry and not value:
                 value = str(embedded_entry.get("file_name") or "").strip() or None
             source_row[column] = value
-            if embedded_entry and column in (*IMAGE_SLOTS, *VIDEO_SLOTS):
+            if embedded_entry and is_media_column:
                 embedded_slot_entries[column] = embedded_entry
             if value or embedded_entry:
                 has_value = True
@@ -691,6 +766,7 @@ def _parse_excel_item(
     duration = str(source_row.get("duration") or "").strip()
     aspect_ratio = str(source_row.get("aspect_ratio") or "").strip() or "16:9"
     prompt = str(source_row.get("prompt") or "").strip()
+    raw_image_source = _normalize_cell(source_row.get("image_source"))
 
     image_entries: Dict[str, Dict[str, Any]] = {}
     video_entries: Dict[str, Dict[str, Any]] = {}
@@ -787,7 +863,12 @@ def _parse_excel_item(
         if validated:
             video_entries[slot_name] = validated
 
-    prompt_refs = _validate_prompt_refs(prompt, {**image_entries, **video_entries}, parsed)
+    prompt_refs = _validate_prompt_refs(
+        prompt,
+        {**image_entries, **video_entries},
+        parsed,
+        dynamic_slot_names=set(DYNAMIC_IMAGE_SLOTS) if raw_image_source else None,
+    )
 
     if normalized_task_type == "video":
         if not duration:
@@ -807,6 +888,8 @@ def _parse_excel_item(
     elif normalized_task_type == "image":
         if image_entries or video_entries:
             parsed.warnings.append(_error("ignored_media_slots", "文生图会忽略素材槽位"))
+
+    image_source_dependency = _parse_image_source_dependency(source_row.get("image_source"), parsed)
 
     if not parsed.errors:
         resolved_model = str(resolved_model_info.get("resolved_model") or "").strip()
@@ -835,6 +918,8 @@ def _parse_excel_item(
             referenced_videos = [slot_name for slot_name in VIDEO_SLOTS if slot_name in prompt_refs and slot_name in video_entries]
             selected_slot = referenced_videos[0] if referenced_videos else next(iter(video_entries.keys()))
             normalized_payload["video_edit_input"] = dict(video_entries[selected_slot], slot=selected_slot)
+        if image_source_dependency is not None:
+            normalized_payload["image_source_dependency"] = image_source_dependency
         parsed.normalized_payload = normalized_payload
 
     parsed.task_type = TASK_TYPE_INTERNAL_TO_DISPLAY.get(normalized_task_type, "") or None

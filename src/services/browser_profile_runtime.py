@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from ..core.logger import debug_logger
 from .browser_profile_bootstrap import (
@@ -10,6 +10,8 @@ from .browser_profile_bootstrap import (
     make_spec,
     prepare_and_optionally_launch,
 )
+from .proxy_pool_service import ProxyPoolService
+from .proxy_manager import ProxyManager
 
 
 _launch_guard = asyncio.Lock()
@@ -77,6 +79,59 @@ async def sync_extension_worker_views(db) -> tuple[Any, list[dict]]:
     return service, routes
 
 
+async def _resolve_browser_proxy_args(
+    db,
+    token_id: int,
+    pool_service: Optional[ProxyPoolService],
+    *,
+    excluded_entry_ids: Optional[List[int]] = None,
+) -> List[str]:
+    """Resolve Chrome --proxy-server arg for the given token.
+
+    Priority:
+      1. IP pool selection (stage 1)
+      2. token.captcha_proxy_url (legacy per-token override)
+      3. nothing (fall back to host network)
+    """
+    if pool_service is None:
+        # Lazy-import to avoid circular import at module load time.
+        # `proxy_pool_service` is a module-level singleton installed by
+        # `src.api.admin.set_dependencies` during app startup. The previous
+        # `from .main import proxy_pool_service` was wrong because there is no
+        # `src/services/main.py` module, causing `No module named 'src.services.main'`.
+        try:
+            from ..api.admin import proxy_pool_service as global_pool_service
+        except Exception as exc:  # pragma: no cover - defensive
+            debug_logger.log_warning(
+                f"[BROWSER_PROFILE_RUNTIME] 读取全局 proxy_pool_service 失败: {exc}"
+            )
+            global_pool_service = None
+        pool_service = global_pool_service
+
+    if pool_service is not None:
+        try:
+            proxy_url, _info = await pool_service.resolve_orchestrator_proxy_url(
+                token_id,
+                excluded_entry_ids=excluded_entry_ids,
+            )
+            if proxy_url:
+                return [f"--proxy-server={proxy_url}"]
+        except Exception as exc:
+            debug_logger.log_warning(
+                f"[BROWSER_PROFILE_RUNTIME] proxy pool resolve failed for token {token_id}: {exc}"
+            )
+
+    try:
+        token = await db.get_token(int(token_id))
+        legacy_proxy = str(getattr(token, "captcha_proxy_url", "") or "").strip() if token else ""
+        if legacy_proxy:
+            return [f"--proxy-server={legacy_proxy}"]
+    except Exception:
+        pass
+
+    return []
+
+
 async def ensure_token_browser_ready(
     db,
     *,
@@ -84,6 +139,8 @@ async def ensure_token_browser_ready(
     wait_timeout: float = 25.0,
     chrome_path: Optional[str] = None,
     force_relaunch: bool = False,
+    pool_service: Optional[ProxyPoolService] = None,
+    excluded_proxy_entry_ids: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     token = await db.get_token(int(token_id))
     if not token:
@@ -98,6 +155,13 @@ async def ensure_token_browser_ready(
         await db.update_token(int(token.id), extension_route_key=route_key)
         token.extension_route_key = route_key
 
+    proxy_args = await _resolve_browser_proxy_args(
+        db,
+        token_id=int(token.id),
+        pool_service=pool_service,
+        excluded_entry_ids=excluded_proxy_entry_ids,
+    )
+
     async with await _get_launch_lock(int(token.id)):
         service, _routes = await sync_extension_worker_views(db)
         binding = await db.get_token_worker_binding(int(token.id))
@@ -111,6 +175,7 @@ async def ensure_token_browser_ready(
                 "route_key": resolved_route_key or route_key,
                 "binding": binding,
                 "snapshot": snapshot,
+                "proxy_args": proxy_args,
             }
 
         await db.clear_worker_slots_for_profile(f"token-{int(token.id)}")
@@ -127,6 +192,7 @@ async def ensure_token_browser_ready(
                 spec,
                 launch=True,
                 chrome_path=str(chrome_path or "").strip() or None,
+                extra_args=proxy_args or None,
             )
         except Exception as exc:
             return {
@@ -135,6 +201,7 @@ async def ensure_token_browser_ready(
                 "token_id": int(token.id),
                 "route_key": route_key,
                 "error": str(exc),
+                "proxy_args": proxy_args,
             }
 
         deadline = time.monotonic() + max(3.0, float(wait_timeout or 0))

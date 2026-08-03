@@ -449,7 +449,7 @@ MODEL_CONFIG = {
     },
 
     # ========== 多图生成 (R2V - Reference Images to Video) ==========
-    # 当前上游协议最多支持 3 张参考图
+    # max_images 调到 8，给 prompt 留足引用图空间；上游实际不卡，模型配置历史上沿用 3 是没实测过的拍脑袋值。
 
     # veo_3_1_r2v_fast (横竖屏)
     "veo_3_1_r2v_fast_portrait": {
@@ -459,7 +459,7 @@ MODEL_CONFIG = {
         "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
         "supports_images": True,
         "min_images": 0,
-        "max_images": 3
+        "max_images": 8
     },
     "veo_3_1_r2v_fast": {
         "type": "video",
@@ -468,7 +468,7 @@ MODEL_CONFIG = {
         "aspect_ratio": "VIDEO_ASPECT_RATIO_LANDSCAPE",
         "supports_images": True,
         "min_images": 0,
-        "max_images": 3
+        "max_images": 8
     },
 
     # veo_3_1_r2v_fast_ultra (横竖屏)
@@ -479,7 +479,7 @@ MODEL_CONFIG = {
         "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
         "supports_images": True,
         "min_images": 0,
-        "max_images": 3
+        "max_images": 8
     },
     "veo_3_1_r2v_fast_ultra": {
         "type": "video",
@@ -488,7 +488,7 @@ MODEL_CONFIG = {
         "aspect_ratio": "VIDEO_ASPECT_RATIO_LANDSCAPE",
         "supports_images": True,
         "min_images": 0,
-        "max_images": 3
+        "max_images": 8
     },
 
     # veo_3_1_r2v_fast_ultra_relaxed (横竖屏)
@@ -499,7 +499,7 @@ MODEL_CONFIG = {
         "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
         "supports_images": True,
         "min_images": 0,
-        "max_images": 3
+        "max_images": 8
     },
     "veo_3_1_r2v_fast_ultra_relaxed": {
         "type": "video",
@@ -508,7 +508,7 @@ MODEL_CONFIG = {
         "aspect_ratio": "VIDEO_ASPECT_RATIO_LANDSCAPE",
         "supports_images": True,
         "min_images": 0,
-        "max_images": 3
+        "max_images": 8
     },
 
     # ========== 视频放大 (Video Upsampler) ==========
@@ -634,7 +634,7 @@ MODEL_CONFIG = {
         "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
         "supports_images": True,
         "min_images": 0,
-        "max_images": 3,
+        "max_images": 8,
         "upsample": {"resolution": "VIDEO_RESOLUTION_4K", "model_key": "veo_3_1_upsampler_4k"}
     },
     "veo_3_1_r2v_fast_ultra_4k": {
@@ -644,7 +644,7 @@ MODEL_CONFIG = {
         "aspect_ratio": "VIDEO_ASPECT_RATIO_LANDSCAPE",
         "supports_images": True,
         "min_images": 0,
-        "max_images": 3,
+        "max_images": 8,
         "upsample": {"resolution": "VIDEO_RESOLUTION_4K", "model_key": "veo_3_1_upsampler_4k"}
     },
 
@@ -656,7 +656,7 @@ MODEL_CONFIG = {
         "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
         "supports_images": True,
         "min_images": 0,
-        "max_images": 3,
+        "max_images": 8,
         "upsample": {"resolution": "VIDEO_RESOLUTION_1080P", "model_key": "veo_3_1_upsampler_1080p"}
     },
     "veo_3_1_r2v_fast_ultra_1080p": {
@@ -666,7 +666,7 @@ MODEL_CONFIG = {
         "aspect_ratio": "VIDEO_ASPECT_RATIO_LANDSCAPE",
         "supports_images": True,
         "min_images": 0,
-        "max_images": 3,
+        "max_images": 8,
         "upsample": {"resolution": "VIDEO_RESOLUTION_1080P", "model_key": "veo_3_1_upsampler_1080p"}
     },
 
@@ -771,7 +771,7 @@ def _make_r2v_config(
     aspect_ratio: str,
     *,
     min_images: int = 1,
-    max_images: int = 3,
+    max_images: int = 8,
     use_v2_model_config: bool = False,
     allow_tier_upgrade: bool = True,
     upsample: Optional[Dict[str, str]] = None,
@@ -997,7 +997,7 @@ def _apply_omni_flash_model_updates():
         "abra_r2v",
         landscape,
         min_images=1,
-        max_images=3,
+        max_images=8,
         use_v2_model_config=True,
         allow_tier_upgrade=False,
     )
@@ -1005,7 +1005,7 @@ def _apply_omni_flash_model_updates():
         "abra_r2v",
         portrait,
         min_images=1,
-        max_images=3,
+        max_images=8,
         use_v2_model_config=True,
         allow_tier_upgrade=False,
     )
@@ -1018,7 +1018,7 @@ def _apply_omni_flash_model_updates():
             upstream_model_key,
             landscape,
             min_images=1,
-            max_images=3,
+            max_images=8,
             use_v2_model_config=True,
             allow_tier_upgrade=False,
         )
@@ -1026,7 +1026,7 @@ def _apply_omni_flash_model_updates():
             upstream_model_key,
             portrait,
             min_images=1,
-            max_images=3,
+            max_images=8,
             use_v2_model_config=True,
             allow_tier_upgrade=False,
         )
@@ -1508,6 +1508,7 @@ class GenerationHandler:
         excluded_token_ids: Optional[List[int]] = None,
         source_image_media_ids: Optional[List[str]] = None,
         reference_assets: Optional[List[Dict[str, Any]]] = None,
+        duration: Any = None,
         include_internal_payload: bool = False,
     ) -> AsyncGenerator:
         """统一生成入口
@@ -1590,6 +1591,12 @@ class GenerationHandler:
         debug_logger.log_info(f"[GENERATION] 正在选择可用Token...")
         token_select_started_at = time.time()
 
+        # 任务积分成本：避免在执行前选一个快没积分的账号导致提交按钮被替换。
+        required_credits = estimate_required_credits(
+            str(model_config.get("model_key") or model or "").strip(),
+            duration,
+        )
+
         if generation_type == "image":
             token = await self.load_balancer.select_token(
                 for_image_generation=True,
@@ -1599,6 +1606,7 @@ class GenerationHandler:
                 track_pending=True,
                 preferred_token_id=preferred_token_id,
                 excluded_token_ids=excluded_token_ids,
+                required_credits=required_credits,
             )
         else:
             token = await self.load_balancer.select_token(
@@ -1609,6 +1617,7 @@ class GenerationHandler:
                 track_pending=True,
                 preferred_token_id=preferred_token_id,
                 excluded_token_ids=excluded_token_ids,
+                required_credits=required_credits,
             )
         perf_trace["token_select_ms"] = int((time.time() - token_select_started_at) * 1000)
 
@@ -2348,7 +2357,7 @@ class GenerationHandler:
                     yield self._create_error_response(error_msg, status_code=400)
                     return
 
-            # R2V: 多图生成 - 当前上游协议最多 3 张参考图
+            # R2V: 多图生成 - max_images 在 MODEL_CONFIG 里配（当前 8）
             elif video_type == "r2v":
                 effective_image_count = source_image_count or image_count
                 if effective_image_count < min_images or (max_images is not None and effective_image_count > max_images):
@@ -2962,6 +2971,8 @@ class GenerationHandler:
                     response_state["generated_assets"] = {
                         "type": "video",
                         "final_video_url": local_url,
+                        # source_url 是尾帧抽取链路唯一使用的原始交付地址。
+                        "source_url": video_url,
                         "mediaGenerationId": video_media_id,
                     }
 
@@ -3316,3 +3327,63 @@ class GenerationHandler:
         except Exception as e:
             debug_logger.log_error(f"Failed to log request: {e}")
             return None
+import re
+
+
+DURATION_SECONDS_RE = re.compile(r"^\s*(\d+)\s*s\s*$", re.IGNORECASE)
+
+
+# 积分成本表（与产品页 / 团队维护保持一致；新模型落表前默认 0，不影响账号选择）：
+# - omni flash (abra_t2v / abra_r2v)：4s 7、6s 10、8s 12、10s 15
+# - Veo 3.1 Lite：10
+# - Veo 3.1 Fast：20
+# - Veo 3.1 Quality：100
+OMNI_FLASH_CREDIT_BY_DURATION: Dict[int, int] = {4: 7, 6: 10, 8: 12, 10: 15}
+VEO_LITE_CREDITS: int = 10
+VEO_FAST_CREDITS: int = 20
+VEO_QUALITY_CREDITS: int = 100
+
+
+def estimate_required_credits(model_key: Optional[str], duration: Any) -> int:
+    """根据上游 model_key + 视频时长计算单次任务消耗的 credits。
+
+    不可识别的模型 / 时长返回 0，由调用方按"无消耗"放行。
+    """
+    if not model_key:
+        return 0
+    key = str(model_key).strip().lower()
+    if not key:
+        return 0
+    if "quality" in key:
+        return VEO_QUALITY_CREDITS
+    if "lite" in key:
+        return VEO_LITE_CREDITS
+    if "fast" in key:
+        return VEO_FAST_CREDITS
+    # omni flash / abra_*: 时长阶梯表
+    seconds = _normalize_duration_seconds(duration)
+    if "abra" in key or "omni" in key or "omni-flash" in key:
+        if seconds is None:
+            return 0
+        return OMNI_FLASH_CREDIT_BY_DURATION.get(int(seconds), 0)
+    return 0
+
+
+def _normalize_duration_seconds(duration: Any) -> Optional[int]:
+    """支持 '4s' / 4 / '10 S' 等输入；解析失败返回 None。"""
+    if duration is None:
+        return None
+    if isinstance(duration, (int, float)):
+        return int(duration)
+    text = str(duration).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    match = DURATION_SECONDS_RE.match(text)
+    if match:
+        return int(match.group(1))
+    try:
+        return int(float(text))
+    except Exception:
+        return None

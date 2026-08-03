@@ -1,4 +1,0 @@
-account_label,pool_tier,pool_group,email,browser_node,profile_name,proxy_name,proxy_url,updater_enabled,flow2api_active,last_login_at,last_token_sync_at,token_status,proxy_status,account_status,notes
-gf-001,hot,A,example001@gmail.com,browser-node-01,flow-gf-001,proxy-gf-001,socks5://127.0.0.1:7891,yes,yes,2026-05-29 10:00:00,2026-05-29 10:05:00,healthy,healthy,serving,first hot pool account
-gf-002,hot,A,example002@gmail.com,browser-node-01,flow-gf-002,proxy-gf-002,socks5://127.0.0.1:7892,yes,yes,2026-05-29 10:10:00,2026-05-29 10:15:00,healthy,healthy,serving,
-gf-021,cold,D,example021@gmail.com,browser-node-02,flow-gf-021,proxy-gf-021,socks5://127.0.0.1:7921,yes,no,2026-05-29 11:00:00,2026-05-29 11:05:00,standby,healthy,standby,cold standby account

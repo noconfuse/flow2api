@@ -39,6 +39,7 @@ router = APIRouter()
 # Dependency injection
 token_manager: TokenManager = None
 proxy_manager: ProxyManager = None
+proxy_pool_service = None
 db: Database = None
 concurrency_manager: Optional[ConcurrencyManager] = None
 
@@ -610,11 +611,12 @@ async def _solve_recaptcha_with_api_service(
     raise RuntimeError(f"{method} 获取 token 超时")
 
 
-def set_dependencies(tm: TokenManager, pm: ProxyManager, database: Database, cm: Optional[ConcurrencyManager] = None):
+def set_dependencies(tm: TokenManager, pm: ProxyManager, database: Database, cm: Optional[ConcurrencyManager] = None, pool_service=None):
     """Set service instances"""
-    global token_manager, proxy_manager, db, concurrency_manager
+    global token_manager, proxy_manager, proxy_pool_service, db, concurrency_manager
     token_manager = tm
     proxy_manager = pm
+    proxy_pool_service = pool_service
     db = database
     concurrency_manager = cm
 
@@ -3196,3 +3198,205 @@ async def plugin_update_token(request: dict, authorization: Optional[str] = Head
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to add token: {str(e)}")
+
+
+# ============= IP Pool (阶段 1) =============
+
+
+class ProxyPoolCreateRequest(BaseModel):
+    name: str
+    strategy: str = "round_robin"
+    is_active: bool = True
+    health_check_url: Optional[str] = None
+    health_check_interval_seconds: int = 300
+    notes: Optional[str] = None
+
+
+class ProxyPoolUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    strategy: Optional[str] = None
+    is_active: Optional[bool] = None
+    health_check_url: Optional[str] = None
+    health_check_interval_seconds: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class ProxyPoolEntryCreateRequest(BaseModel):
+    proxy_url: str
+    label: Optional[str] = None
+    is_active: bool = True
+
+
+class ProxyPoolEntryUpdateRequest(BaseModel):
+    proxy_url: Optional[str] = None
+    label: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class ProxyPoolBindingRequest(BaseModel):
+    token_id: int
+    pool_id: int
+    is_active: bool = True
+    pinned_entry_id: Optional[int] = None
+
+
+def _require_pool_service():
+    if proxy_pool_service is None:
+        raise HTTPException(status_code=503, detail="IP pool service not initialized")
+    return proxy_pool_service
+
+
+@router.get("/api/proxy-pools")
+async def list_proxy_pools_endpoint(token: str = Depends(verify_admin_token)):
+    service = _require_pool_service()
+    pools = await service.db.list_proxy_pools()
+    result = []
+    for pool in pools:
+        entries = await service.db.list_proxy_pool_entries(pool.id)
+        bindings = await service.db.list_proxy_pool_bindings(pool_id=pool.id)
+        result.append({
+            **pool.model_dump(),
+            "entry_count": len(entries),
+            "active_entry_count": sum(1 for e in entries if e.is_active),
+            "binding_count": len(bindings),
+            "active_binding_count": sum(1 for b in bindings if b.is_active),
+        })
+    return {"success": True, "pools": result}
+
+
+@router.post("/api/proxy-pools")
+async def create_proxy_pool_endpoint(request: ProxyPoolCreateRequest, token: str = Depends(verify_admin_token)):
+    service = _require_pool_service()
+    try:
+        pool = await service.db.create_proxy_pool(
+            name=request.name.strip(),
+            strategy=request.strategy.strip().lower() or "round_robin",
+            is_active=request.is_active,
+            health_check_url=request.health_check_url,
+            health_check_interval_seconds=int(request.health_check_interval_seconds or 300),
+            notes=request.notes,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"创建 IP 池失败: {exc}")
+    return {"success": True, "pool": pool.model_dump()}
+
+
+@router.patch("/api/proxy-pools/{pool_id}")
+async def update_proxy_pool_endpoint(pool_id: int, request: ProxyPoolUpdateRequest, token: str = Depends(verify_admin_token)):
+    service = _require_pool_service()
+    fields = {k: v for k, v in request.model_dump().items() if v is not None}
+    pool = await service.db.update_proxy_pool(pool_id, **fields)
+    if not pool:
+        raise HTTPException(status_code=404, detail="IP 池不存在")
+    return {"success": True, "pool": pool.model_dump()}
+
+
+@router.delete("/api/proxy-pools/{pool_id}")
+async def delete_proxy_pool_endpoint(pool_id: int, token: str = Depends(verify_admin_token)):
+    service = _require_pool_service()
+    ok = await service.db.delete_proxy_pool(pool_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="IP 池不存在")
+    return {"success": True}
+
+
+@router.get("/api/proxy-pools/{pool_id}/entries")
+async def list_proxy_pool_entries_endpoint(pool_id: int, token: str = Depends(verify_admin_token)):
+    service = _require_pool_service()
+    pool = await service.db.get_proxy_pool(pool_id)
+    if not pool:
+        raise HTTPException(status_code=404, detail="IP 池不存在")
+    entries = await service.db.list_proxy_pool_entries(pool_id)
+    return {"success": True, "entries": [e.model_dump() for e in entries]}
+
+
+@router.post("/api/proxy-pools/{pool_id}/entries")
+async def create_proxy_pool_entry_endpoint(pool_id: int, request: ProxyPoolEntryCreateRequest, token: str = Depends(verify_admin_token)):
+    service = _require_pool_service()
+    pool = await service.db.get_proxy_pool(pool_id)
+    if not pool:
+        raise HTTPException(status_code=404, detail="IP 池不存在")
+    try:
+        normalized = proxy_manager.normalize_proxy_url(request.proxy_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not normalized:
+        raise HTTPException(status_code=400, detail="代理地址为空")
+    entry = await service.db.create_proxy_pool_entry(
+        pool_id=pool_id,
+        proxy_url=normalized,
+        label=request.label,
+        is_active=request.is_active,
+    )
+    return {"success": True, "entry": entry.model_dump()}
+
+
+@router.patch("/api/proxy-pool-entries/{entry_id}")
+async def update_proxy_pool_entry_endpoint(entry_id: int, request: ProxyPoolEntryUpdateRequest, token: str = Depends(verify_admin_token)):
+    service = _require_pool_service()
+    fields = {k: v for k, v in request.model_dump().items() if v is not None}
+    if "proxy_url" in fields:
+        try:
+            fields["proxy_url"] = proxy_manager.normalize_proxy_url(fields["proxy_url"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if not fields["proxy_url"]:
+            raise HTTPException(status_code=400, detail="代理地址为空")
+    entry = await service.db.update_proxy_pool_entry(entry_id, **fields)
+    if not entry:
+        raise HTTPException(status_code=404, detail="代理条目不存在")
+    return {"success": True, "entry": entry.model_dump()}
+
+
+@router.delete("/api/proxy-pool-entries/{entry_id}")
+async def delete_proxy_pool_entry_endpoint(entry_id: int, token: str = Depends(verify_admin_token)):
+    service = _require_pool_service()
+    ok = await service.db.delete_proxy_pool_entry(entry_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="代理条目不存在")
+    return {"success": True}
+
+
+@router.get("/api/proxy-pool-bindings")
+async def list_proxy_pool_bindings_endpoint(token_id: Optional[int] = None, pool_id: Optional[int] = None, token: str = Depends(verify_admin_token)):
+    service = _require_pool_service()
+    bindings = await service.db.list_proxy_pool_bindings(token_id=token_id, pool_id=pool_id)
+    return {"success": True, "bindings": [b.model_dump() for b in bindings]}
+
+
+@router.post("/api/proxy-pool-bindings")
+async def upsert_proxy_pool_binding_endpoint(request: ProxyPoolBindingRequest, token: str = Depends(verify_admin_token)):
+    service = _require_pool_service()
+    binding = await service.db.upsert_proxy_pool_binding(
+        token_id=request.token_id,
+        pool_id=request.pool_id,
+        is_active=request.is_active,
+        pinned_entry_id=request.pinned_entry_id,
+    )
+    return {"success": True, "binding": binding.model_dump()}
+
+
+@router.delete("/api/proxy-pool-bindings/{binding_id}")
+async def delete_proxy_pool_binding_endpoint(binding_id: int, token: str = Depends(verify_admin_token)):
+    service = _require_pool_service()
+    ok = await service.db.delete_proxy_pool_binding(binding_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="绑定不存在")
+    return {"success": True}
+
+
+@router.post("/api/proxy-pools/{pool_id}/probe")
+async def probe_proxy_pool_endpoint(pool_id: int, token: str = Depends(verify_admin_token)):
+    service = _require_pool_service()
+    pool = await service.db.get_proxy_pool(pool_id)
+    if not pool:
+        raise HTTPException(status_code=404, detail="IP 池不存在")
+    result = await service.probe_pool(pool)
+    return {"success": True, "result": result}
+
+
+@router.post("/api/proxy-pools/probe-all")
+async def probe_all_proxy_pools_endpoint(token: str = Depends(verify_admin_token)):
+    service = _require_pool_service()
+    results = await service.probe_all_pools()
+    return {"success": True, "results": results}

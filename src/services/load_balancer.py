@@ -41,6 +41,16 @@ class LoadBalancer:
         credits = self._get_token_credits(token)
         return config.exhausted_credit_threshold < credits <= config.low_credit_threshold
 
+    def _is_credit_insufficient_for(self, token: Token, required_credits: Optional[int]) -> bool:
+        """当任务显式声明了积分消耗时，账号剩余 credits 必须 >= required_credits。
+
+        避免在提交前选择了一个快没积分的账号，导致 UI 端积分耗尽、提交按钮被替换。
+        required_credits 为 0/None 表示任务无积分消耗或尚未识别，仍按既有规则放行。
+        """
+        if not required_credits or required_credits <= 0:
+            return False
+        return self._get_token_credits(token) < int(required_credits)
+
     def _get_automation_risk_score(self, token: Token) -> int:
         try:
             return max(0, int(token.automation_risk_score or 0))
@@ -287,6 +297,7 @@ class LoadBalancer:
         track_pending: bool = False,
         preferred_token_id: Optional[int] = None,
         excluded_token_ids: Optional[Iterable[int]] = None,
+        required_credits: Optional[int] = None,
         _auto_launch_attempted: bool = False,
     ) -> Optional[Token]:
         """
@@ -355,6 +366,12 @@ class LoadBalancer:
                 continue
             if self._is_credit_exhausted(token):
                 filtered_reasons[token.id] = f"账号余额已耗尽 (credits={self._get_token_credits(token)})"
+                continue
+            if self._is_credit_insufficient_for(token, required_credits):
+                filtered_reasons[token.id] = (
+                    f"账号余额不足以支付本次任务 (credits={self._get_token_credits(token)}, "
+                    f"required={int(required_credits)})"
+                )
                 continue
             automation_risk_blocked, automation_risk_reason = self._is_automation_risk_blocked(
                 token,

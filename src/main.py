@@ -16,6 +16,7 @@ from .services.load_balancer import LoadBalancer
 from .services.concurrency_manager import ConcurrencyManager
 from .services.batch_executor import BatchExecutor
 from .services.generation_handler import GenerationHandler
+from .services.proxy_pool_service import ProxyPoolService
 from .api import routes, admin, batch, capture_debug
 
 
@@ -212,10 +213,11 @@ generation_handler = GenerationHandler(
     proxy_manager  # 添加 proxy_manager 参数
 )
 batch_executor = BatchExecutor(db, generation_handler)
+proxy_pool_service = ProxyPoolService(db, proxy_manager)
 
 # Set dependencies
 routes.set_generation_handler(generation_handler)
-admin.set_dependencies(token_manager, proxy_manager, db, concurrency_manager)
+admin.set_dependencies(token_manager, proxy_manager, db, concurrency_manager, pool_service=proxy_pool_service)
 batch.set_dependencies(token_manager, db, batch_executor)
 capture_debug.set_dependencies(db)
 

@@ -29,6 +29,8 @@ class TokenManager:
         self._refresh_locks: dict[int, asyncio.Lock] = {}
         self._project_locks: dict[int, asyncio.Lock] = {}
         self._refresh_futures: dict[int, asyncio.Task] = {}
+        self._upstream_project_valid_cache: dict[str, float] = {}
+        self._upstream_project_valid_cache_ttl: int = 180
 
     async def _get_token_lock(
         self,
@@ -141,6 +143,52 @@ class TokenManager:
                     return ordered_projects[(index + 1) % len(ordered_projects)]
 
         return ordered_projects[0]
+
+    async def _is_project_accessible_upstream(self, token_id: int, project_id: str) -> bool:
+        """Validate whether a local project still exists on the upstream Flow side."""
+        import time
+
+        normalized_project_id = str(project_id or "").strip()
+        if not normalized_project_id:
+            return False
+
+        cached_ts = self._upstream_project_valid_cache.get(normalized_project_id)
+        if cached_ts is not None and (time.time() - cached_ts) < self._upstream_project_valid_cache_ttl:
+            return True
+
+        token = await self.db.get_token(token_id)
+        if not token or not str(getattr(token, "st", "") or "").strip():
+            raise ValueError("账号不存在或缺少 ST，无法校验上游项目")
+
+        try:
+            await self.flow_client.get_flow_project_initial_data(
+                str(getattr(token, "st", "") or "").strip(),
+                normalized_project_id,
+            )
+            self._upstream_project_valid_cache[normalized_project_id] = time.time()
+            return True
+        except Exception as exc:
+            debug_logger.log_warning(
+                f"[PROJECT] 上游项目不可访问，标记本地项目失效: project_id={normalized_project_id}, err={exc}"
+            )
+            self._upstream_project_valid_cache.pop(normalized_project_id, None)
+            return False
+
+    async def _validate_projects_accessible(self, token_id: int, projects: List[Project]) -> List[Project]:
+        """Return only projects that still exist upstream; deactivate missing ones locally."""
+        valid_projects: List[Project] = []
+        for project in projects:
+            project_id = str(getattr(project, "project_id", "") or "").strip()
+            if not project_id:
+                continue
+            if await self._is_project_accessible_upstream(token_id, project_id):
+                valid_projects.append(project)
+            else:
+                try:
+                    await self.db.deactivate_project(project_id)
+                except Exception as exc:
+                    debug_logger.log_warning(f"[PROJECT] deactivate_project failed: project_id={project_id}, err={exc}")
+        return valid_projects
 
     # ========== Token CRUD ==========
 
@@ -883,8 +931,19 @@ class TokenManager:
             if not token:
                 raise ValueError("账号不存在")
 
-            projects = [project for project in await self.db.get_projects_by_token(token_id) if project.is_active]
-            projects = self._sort_projects(projects)
+            raw_projects = [project for project in await self.db.get_projects_by_token(token_id) if project.is_active]
+            projects = self._sort_projects(await self._validate_projects_accessible(token_id, raw_projects))
+
+            if str(getattr(token, "current_project_id", "") or "").strip() and not any(
+                str(getattr(proj, "project_id", "") or "").strip() == str(getattr(token, "current_project_id", "") or "").strip()
+                for proj in projects
+            ):
+                await self.db.update_token(
+                    token_id,
+                    current_project_id=None,
+                    current_project_name=None,
+                )
+                token = await self.db.get_token(token_id) or token
 
             try:
                 project_pool_size = self._get_project_pool_size()

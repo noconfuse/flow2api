@@ -371,5 +371,94 @@ class FlowClientProjectInitialDataTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["height"], 768)
 
 
+class FlowClientUploadDedupTests(unittest.IsolatedAsyncioTestCase):
+    def _mock_client(self, client):
+        """Set up mocks for _submit_json_via_extension (extension mode) and _make_request."""
+        ext_calls = []
+        make_calls = []
+
+        async def fake_submit_json_via_extension(**kwargs):
+            ext_calls.append(kwargs)
+            return {"media": [{"name": kwargs.get("payload", {}).get("fileName", "mock-media-id")}]}
+
+        async def fake_make_request(**kwargs):
+            make_calls.append(kwargs)
+            return {"media": {"name": "mock-media-id"}}
+
+        client._submit_json_via_extension = AsyncMock(side_effect=fake_submit_json_via_extension)
+        client._make_request = AsyncMock(side_effect=fake_make_request)
+        return ext_calls, make_calls
+
+    async def test_repeated_upload_image_with_same_bytes_and_project_returns_cached_media_id(self):
+        client = FlowClient(proxy_manager=None)
+        ext_calls, make_calls = self._mock_client(client)
+
+        first = await client.upload_image(
+            at="at-1",
+            image_bytes=JPEG_BYTES,
+            aspect_ratio="IMAGE_ASPECT_RATIO_LANDSCAPE",
+            project_id="project-shared",
+        )
+        second = await client.upload_image(
+            at="at-2",
+            image_bytes=JPEG_BYTES,
+            aspect_ratio="IMAGE_ASPECT_RATIO_LANDSCAPE",
+            project_id="project-shared",
+        )
+
+        self.assertEqual(first, second)
+        # 同样的 bytes + project 第二次直接命中缓存，不应再次发起上传请求
+        self.assertEqual(len(ext_calls), 1)
+        self.assertEqual(len(make_calls), 0)
+
+    async def test_upload_dedup_isolated_by_project_id(self):
+        client = FlowClient(proxy_manager=None)
+        ext_calls, make_calls = self._mock_client(client)
+
+        media_a = await client.upload_image(
+            at="at",
+            image_bytes=JPEG_BYTES,
+            aspect_ratio="IMAGE_ASPECT_RATIO_LANDSCAPE",
+            project_id="project-a",
+        )
+        media_b = await client.upload_image(
+            at="at",
+            image_bytes=JPEG_BYTES,
+            aspect_ratio="IMAGE_ASPECT_RATIO_LANDSCAPE",
+            project_id="project-b",
+        )
+
+        self.assertTrue(media_a)
+        self.assertTrue(media_b)
+        # 不同 project 不应互相命中缓存
+        self.assertEqual(len(ext_calls), 2)
+
+    async def test_upload_dedup_disabled_without_project_id(self):
+        client = FlowClient(proxy_manager=None)
+        ext_calls, make_calls = self._mock_client(client)
+
+        first = await client.upload_image(
+            at="at",
+            image_bytes=JPEG_BYTES,
+            aspect_ratio="IMAGE_ASPECT_RATIO_LANDSCAPE",
+            project_id=None,
+        )
+        second = await client.upload_image(
+            at="at",
+            image_bytes=JPEG_BYTES,
+            aspect_ratio="IMAGE_ASPECT_RATIO_LANDSCAPE",
+            project_id=None,
+        )
+
+        # 没有 project_id 时不应跨调用复用 media_id
+        # 由于 mock 每次返回同一个 fileName 的 media_id，两次结果在同一个毫秒内可能相同，
+        # 但关键指标是 _submit_json_via_extension 被调用了 2 次（第一次没缓存，第二次也没缓存）
+        self.assertEqual(len(ext_calls), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
 if __name__ == "__main__":
     unittest.main()

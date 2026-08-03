@@ -139,6 +139,7 @@ class BatchJobItem(BaseModel):
     error_message: Optional[str] = None
     result_media_id: Optional[str] = None
     result_url: Optional[str] = None
+    final_frame_path: Optional[str] = None
     token_id: Optional[int] = None
     project_id: Optional[str] = None
     created_at: Optional[datetime] = None
@@ -180,6 +181,56 @@ class ProxyConfig(BaseModel):
     proxy_url: Optional[str] = None  # 请求代理地址
     media_proxy_enabled: bool = False  # 图片上传/下载代理开关
     media_proxy_url: Optional[str] = None  # 图片上传/下载代理地址
+
+
+class ProxyPool(BaseModel):
+    """IP pool: a named group of proxy entries that can be assigned to a token."""
+
+    id: Optional[int] = None
+    name: str
+    strategy: str = "round_robin"  # round_robin / random / least_used / sticky
+    is_active: bool = True
+    health_check_url: Optional[str] = None
+    health_check_interval_seconds: int = 300
+    last_health_check_at: Optional[datetime] = None
+    last_health_status: str = "unknown"  # unknown / healthy / degraded / failed
+    consecutive_failures: int = 0
+    notes: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class ProxyPoolEntry(BaseModel):
+    """Single proxy entry inside a pool."""
+
+    id: Optional[int] = None
+    pool_id: int
+    proxy_url: str
+    label: Optional[str] = None
+    is_active: bool = True
+    health_status: str = "unknown"  # unknown / healthy / degraded / failed
+    last_used_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    consecutive_failures: int = 0
+    use_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    latency_ms: Optional[int] = None
+    last_health_check_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class ProxyPoolBinding(BaseModel):
+    """Assignment between a token and a proxy pool (with optional pin)."""
+
+    id: Optional[int] = None
+    token_id: int
+    pool_id: int
+    is_active: bool = True
+    pinned_entry_id: Optional[int] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 class GenerationConfig(BaseModel):

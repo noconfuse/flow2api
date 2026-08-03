@@ -20,6 +20,9 @@ from .models import (
     PluginConfig,
     Project,
     ProxyConfig,
+    ProxyPool,
+    ProxyPoolBinding,
+    ProxyPoolEntry,
     RequestLog,
     SchedulerConfig,
     Task,
@@ -976,6 +979,68 @@ class Database:
                     )
                 """)
 
+            # Proxy pool tables
+            if not await self._table_exists(db, "proxy_pools"):
+                print("  ✓ Creating missing table: proxy_pools")
+                await db.execute("""
+                    CREATE TABLE proxy_pools (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT UNIQUE NOT NULL,
+                        strategy TEXT DEFAULT 'round_robin',
+                        is_active BOOLEAN DEFAULT 1,
+                        health_check_url TEXT,
+                        health_check_interval_seconds INTEGER DEFAULT 300,
+                        last_health_check_at TIMESTAMP,
+                        last_health_status TEXT DEFAULT 'unknown',
+                        consecutive_failures INTEGER DEFAULT 0,
+                        notes TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+            if not await self._table_exists(db, "proxy_pool_entries"):
+                print("  ✓ Creating missing table: proxy_pool_entries")
+                await db.execute("""
+                    CREATE TABLE proxy_pool_entries (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        pool_id INTEGER NOT NULL,
+                        proxy_url TEXT NOT NULL,
+                        label TEXT,
+                        is_active BOOLEAN DEFAULT 1,
+                        health_status TEXT DEFAULT 'unknown',
+                        last_used_at TIMESTAMP,
+                        last_error TEXT,
+                        consecutive_failures INTEGER DEFAULT 0,
+                        use_count INTEGER DEFAULT 0,
+                        success_count INTEGER DEFAULT 0,
+                        failure_count INTEGER DEFAULT 0,
+                        latency_ms INTEGER,
+                        last_health_check_at TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (pool_id) REFERENCES proxy_pools(id) ON DELETE CASCADE
+                    )
+                """)
+            if not await self._table_exists(db, "proxy_pool_bindings"):
+                print("  ✓ Creating missing table: proxy_pool_bindings")
+                await db.execute("""
+                    CREATE TABLE proxy_pool_bindings (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        token_id INTEGER NOT NULL,
+                        pool_id INTEGER NOT NULL,
+                        is_active BOOLEAN DEFAULT 1,
+                        pinned_entry_id INTEGER,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE (token_id, pool_id),
+                        FOREIGN KEY (token_id) REFERENCES tokens(id) ON DELETE CASCADE,
+                        FOREIGN KEY (pool_id) REFERENCES proxy_pools(id) ON DELETE CASCADE,
+                        FOREIGN KEY (pinned_entry_id) REFERENCES proxy_pool_entries(id) ON DELETE SET NULL
+                    )
+                """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_proxy_pool_entries_pool ON proxy_pool_entries(pool_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_proxy_pool_bindings_token ON proxy_pool_bindings(token_id)")
+
             # Check and create call_logic_config table if missing
             if not await self._table_exists(db, "call_logic_config"):
                 print("  Creating missing table: call_logic_config")
@@ -1332,6 +1397,7 @@ class Database:
                     error_message TEXT,
                     result_media_id TEXT,
                     result_url TEXT,
+                    final_frame_path TEXT,
                     token_id INTEGER,
                     project_id TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1384,6 +1450,62 @@ class Database:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            # IP pool registry
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS proxy_pools (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    strategy TEXT DEFAULT 'round_robin',
+                    is_active BOOLEAN DEFAULT 1,
+                    health_check_url TEXT,
+                    health_check_interval_seconds INTEGER DEFAULT 300,
+                    last_health_check_at TIMESTAMP,
+                    last_health_status TEXT DEFAULT 'unknown',
+                    consecutive_failures INTEGER DEFAULT 0,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS proxy_pool_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    pool_id INTEGER NOT NULL,
+                    proxy_url TEXT NOT NULL,
+                    label TEXT,
+                    is_active BOOLEAN DEFAULT 1,
+                    health_status TEXT DEFAULT 'unknown',
+                    last_used_at TIMESTAMP,
+                    last_error TEXT,
+                    consecutive_failures INTEGER DEFAULT 0,
+                    use_count INTEGER DEFAULT 0,
+                    success_count INTEGER DEFAULT 0,
+                    failure_count INTEGER DEFAULT 0,
+                    latency_ms INTEGER,
+                    last_health_check_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (pool_id) REFERENCES proxy_pools(id) ON DELETE CASCADE
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS proxy_pool_bindings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    token_id INTEGER NOT NULL,
+                    pool_id INTEGER NOT NULL,
+                    is_active BOOLEAN DEFAULT 1,
+                    pinned_entry_id INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (token_id, pool_id),
+                    FOREIGN KEY (token_id) REFERENCES tokens(id) ON DELETE CASCADE,
+                    FOREIGN KEY (pool_id) REFERENCES proxy_pools(id) ON DELETE CASCADE,
+                    FOREIGN KEY (pinned_entry_id) REFERENCES proxy_pool_entries(id) ON DELETE SET NULL
+                )
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_proxy_pool_entries_pool ON proxy_pool_entries(pool_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_proxy_pool_bindings_token ON proxy_pool_bindings(token_id)")
 
             # Generation config table
             await db.execute("""
@@ -1581,6 +1703,9 @@ class Database:
             # Migrate request_logs table if needed
             await self._migrate_request_logs(db)
 
+            # Migrate batch_job_items table if needed
+            await self._migrate_batch_job_items(db)
+
             # Request logs query indexes (列表按 created_at 排序 / token 过滤)
             await db.execute("CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_request_logs_token_id_created_at ON request_logs(token_id, created_at DESC)")
@@ -1655,6 +1780,17 @@ class Database:
         except Exception as e:
             print(f"?? request_logs?????: {e}")
             # Continue even if migration fails
+
+    async def _migrate_batch_job_items(self, db):
+        """Ensure batch_job_items has columns needed for final-frame dependencies."""
+        try:
+            if not await self._column_exists(db, "batch_job_items", "final_frame_path"):
+                await db.execute(
+                    "ALTER TABLE batch_job_items ADD COLUMN final_frame_path TEXT"
+                )
+                print("  ✓ Added column 'final_frame_path' to batch_job_items table")
+        except Exception as e:
+            print(f"?? batch_job_items?????: {e}")
 
     # Token operations
     async def add_token(self, token: Token) -> int:
@@ -2481,6 +2617,12 @@ class Database:
             await db.execute("DELETE FROM projects WHERE project_id = ?", (project_id,))
             await db.commit()
 
+    async def deactivate_project(self, project_id: str):
+        """Mark local project inactive without deleting the row."""
+        async with self._connect(write=True) as db:
+            await db.execute("UPDATE projects SET is_active = 0 WHERE project_id = ?", (project_id,))
+            await db.commit()
+
     # Task operations
     async def create_task(self, task: Task) -> int:
         """Create a new task"""
@@ -2917,6 +3059,238 @@ class Database:
                 """, (enabled, proxy_url, new_media_proxy_enabled, new_media_proxy_url))
 
             await db.commit()
+
+    # ------------------------------------------------------------------ #
+    # IP pool CRUD
+    # ------------------------------------------------------------------ #
+    async def list_proxy_pools(self, active_only: bool = False) -> List[ProxyPool]:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            sql = "SELECT * FROM proxy_pools"
+            if active_only:
+                sql += " WHERE is_active = 1"
+            sql += " ORDER BY id ASC"
+            cursor = await db.execute(sql)
+            rows = await cursor.fetchall()
+            return [ProxyPool(**dict(row)) for row in rows]
+
+    async def get_proxy_pool(self, pool_id: int) -> Optional[ProxyPool]:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM proxy_pools WHERE id = ?", (pool_id,))
+            row = await cursor.fetchone()
+            return ProxyPool(**dict(row)) if row else None
+
+    async def create_proxy_pool(
+        self,
+        name: str,
+        strategy: str = "round_robin",
+        is_active: bool = True,
+        health_check_url: Optional[str] = None,
+        health_check_interval_seconds: int = 300,
+        notes: Optional[str] = None,
+    ) -> ProxyPool:
+        async with self._connect(write=True) as db:
+            cursor = await db.execute(
+                """
+                INSERT INTO proxy_pools (
+                    name, strategy, is_active, health_check_url,
+                    health_check_interval_seconds, notes
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (name, strategy, 1 if is_active else 0, health_check_url, health_check_interval_seconds, notes),
+            )
+            new_id = cursor.lastrowid
+            await db.commit()
+        pool = await self.get_proxy_pool(new_id)
+        return pool
+
+    async def update_proxy_pool(self, pool_id: int, **fields) -> Optional[ProxyPool]:
+        if not fields:
+            return await self.get_proxy_pool(pool_id)
+        async with self._connect(write=True) as db:
+            assignments = []
+            params: List[Any] = []
+            for key, value in fields.items():
+                if key not in {
+                    "name", "strategy", "is_active", "health_check_url",
+                    "health_check_interval_seconds", "last_health_check_at",
+                    "last_health_status", "consecutive_failures", "notes",
+                }:
+                    continue
+                if key == "is_active" and isinstance(value, bool):
+                    value = 1 if value else 0
+                assignments.append(f"{key} = ?")
+                params.append(value)
+            if not assignments:
+                return await self.get_proxy_pool(pool_id)
+            assignments.append("updated_at = CURRENT_TIMESTAMP")
+            params.append(pool_id)
+            await db.execute(
+                f"UPDATE proxy_pools SET {', '.join(assignments)} WHERE id = ?",
+                params,
+            )
+            await db.commit()
+        return await self.get_proxy_pool(pool_id)
+
+    async def delete_proxy_pool(self, pool_id: int) -> bool:
+        async with self._connect(write=True) as db:
+            cursor = await db.execute("DELETE FROM proxy_pools WHERE id = ?", (pool_id,))
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def list_proxy_pool_entries(self, pool_id: int, active_only: bool = False) -> List[ProxyPoolEntry]:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            sql = "SELECT * FROM proxy_pool_entries WHERE pool_id = ?"
+            if active_only:
+                sql += " AND is_active = 1"
+            sql += " ORDER BY id ASC"
+            cursor = await db.execute(sql, (pool_id,))
+            rows = await cursor.fetchall()
+            return [ProxyPoolEntry(**dict(row)) for row in rows]
+
+    async def get_proxy_pool_entry(self, entry_id: int) -> Optional[ProxyPoolEntry]:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM proxy_pool_entries WHERE id = ?", (entry_id,))
+            row = await cursor.fetchone()
+            return ProxyPoolEntry(**dict(row)) if row else None
+
+    async def create_proxy_pool_entry(
+        self,
+        pool_id: int,
+        proxy_url: str,
+        label: Optional[str] = None,
+        is_active: bool = True,
+    ) -> ProxyPoolEntry:
+        async with self._connect(write=True) as db:
+            cursor = await db.execute(
+                """
+                INSERT INTO proxy_pool_entries (pool_id, proxy_url, label, is_active)
+                VALUES (?, ?, ?, ?)
+                """,
+                (pool_id, proxy_url, label, 1 if is_active else 0),
+            )
+            new_id = cursor.lastrowid
+            await db.commit()
+        entry = await self.get_proxy_pool_entry(new_id)
+        return entry
+
+    async def update_proxy_pool_entry(self, entry_id: int, **fields) -> Optional[ProxyPoolEntry]:
+        if not fields:
+            return await self.get_proxy_pool_entry(entry_id)
+        async with self._connect(write=True) as db:
+            assignments = []
+            params: List[Any] = []
+            for key, value in fields.items():
+                if key not in {
+                    "proxy_url", "label", "is_active", "health_status",
+                    "last_used_at", "last_error", "consecutive_failures",
+                    "use_count", "success_count", "failure_count",
+                    "latency_ms", "last_health_check_at",
+                }:
+                    continue
+                if key == "is_active" and isinstance(value, bool):
+                    value = 1 if value else 0
+                assignments.append(f"{key} = ?")
+                params.append(value)
+            if not assignments:
+                return await self.get_proxy_pool_entry(entry_id)
+            assignments.append("updated_at = CURRENT_TIMESTAMP")
+            params.append(entry_id)
+            await db.execute(
+                f"UPDATE proxy_pool_entries SET {', '.join(assignments)} WHERE id = ?",
+                params,
+            )
+            await db.commit()
+        return await self.get_proxy_pool_entry(entry_id)
+
+    async def delete_proxy_pool_entry(self, entry_id: int) -> bool:
+        async with self._connect(write=True) as db:
+            cursor = await db.execute("DELETE FROM proxy_pool_entries WHERE id = ?", (entry_id,))
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def list_proxy_pool_bindings(
+        self,
+        token_id: Optional[int] = None,
+        pool_id: Optional[int] = None,
+    ) -> List[ProxyPoolBinding]:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            sql = "SELECT * FROM proxy_pool_bindings WHERE 1=1"
+            params: List[Any] = []
+            if token_id is not None:
+                sql += " AND token_id = ?"
+                params.append(token_id)
+            if pool_id is not None:
+                sql += " AND pool_id = ?"
+                params.append(pool_id)
+            sql += " ORDER BY id ASC"
+            cursor = await db.execute(sql, params)
+            rows = await cursor.fetchall()
+            return [ProxyPoolBinding(**dict(row)) for row in rows]
+
+    async def get_proxy_pool_binding_for_token(self, token_id: int) -> Optional[ProxyPoolBinding]:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT * FROM proxy_pool_bindings
+                WHERE token_id = ? AND is_active = 1
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (token_id,),
+            )
+            row = await cursor.fetchone()
+            return ProxyPoolBinding(**dict(row)) if row else None
+
+    async def upsert_proxy_pool_binding(
+        self,
+        token_id: int,
+        pool_id: int,
+        is_active: bool = True,
+        pinned_entry_id: Optional[int] = None,
+    ) -> ProxyPoolBinding:
+        async with self._connect(write=True) as db:
+            cursor = await db.execute(
+                "SELECT id FROM proxy_pool_bindings WHERE token_id = ? AND pool_id = ?",
+                (token_id, pool_id),
+            )
+            row = await cursor.fetchone()
+            if row:
+                await db.execute(
+                    """
+                    UPDATE proxy_pool_bindings
+                    SET is_active = ?, pinned_entry_id = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (1 if is_active else 0, pinned_entry_id, row[0]),
+                )
+                binding_id = row[0]
+            else:
+                cursor = await db.execute(
+                    """
+                    INSERT INTO proxy_pool_bindings (token_id, pool_id, is_active, pinned_entry_id)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (token_id, pool_id, 1 if is_active else 0, pinned_entry_id),
+                )
+                binding_id = cursor.lastrowid
+            await db.commit()
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM proxy_pool_bindings WHERE id = ?", (binding_id,))
+            row = await cursor.fetchone()
+            return ProxyPoolBinding(**dict(row)) if row else None
+
+    async def delete_proxy_pool_binding(self, binding_id: int) -> bool:
+        async with self._connect(write=True) as db:
+            cursor = await db.execute("DELETE FROM proxy_pool_bindings WHERE id = ?", (binding_id,))
+            await db.commit()
+            return cursor.rowcount > 0
 
     async def get_generation_config(self) -> Optional[GenerationConfig]:
         """Get generation configuration"""

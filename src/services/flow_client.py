@@ -1,7 +1,8 @@
 """Flow API Client for VideoFX (Veo)"""
 import asyncio
-import json
 import contextvars
+import hashlib
+import json
 import time
 import uuid
 import random
@@ -11,7 +12,7 @@ import re
 import ssl
 import unicodedata
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional, List, Union, Callable, Awaitable
+from typing import Dict, Any, Optional, List, Tuple, Union, Callable, Awaitable
 from urllib.parse import quote
 import urllib.error
 import urllib.request
@@ -40,6 +41,9 @@ class FlowClient:
         self.timeout = config.flow_timeout
         # 缓存每个账号的 User-Agent
         self._user_agent_cache = {}
+        # 上传去重缓存：(bytes_sha256, project_id, kind) -> media_id
+        # 用于批量任务中多个 item 复用同一张图片/视频时，Flow 侧只上传一次。
+        self._uploaded_media_cache: Dict[Tuple[str, str, str], str] = {}
         # 当前请求链路绑定的浏览器指纹（基于 contextvar，避免并发串扰）
         self._request_fingerprint_ctx: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
             "flow_request_fingerprint",
@@ -1929,6 +1933,16 @@ class FlowClient:
     ) -> str:
         """上传视频到指定项目并返回 media id。"""
         normalized_project_id = str(project_id or "").strip()
+
+        # 跨任务复用：同 bytes + 同 project 只上传一次。
+        cache_key = self._build_upload_cache_key(video_bytes, normalized_project_id, "video")
+        if cache_key:
+            cached_media_id = self._uploaded_media_cache.get(cache_key)
+            if cached_media_id:
+                debug_logger.log_info(
+                    f"[UPLOAD DEDUP] video bytes+project 已命中缓存，media_id={cached_media_id}"
+                )
+                return cached_media_id
         if not normalized_project_id:
             raise RuntimeError("project_id is required for video upload")
 
@@ -2016,6 +2030,8 @@ class FlowClient:
                 if not media_id:
                     media_id = self._extract_upload_video_media_id(upload_result.get("text"))
                 if media_id:
+                    if cache_key:
+                        self._uploaded_media_cache[cache_key] = media_id
                     return media_id
                 raise RuntimeError(
                     "video upload finalize succeeded but response did not include media id; "
@@ -2059,6 +2075,17 @@ class FlowClient:
         Returns:
             mediaId
         """
+        normalized_project_id = str(project_id or "").strip()
+
+        # 跨任务复用：同 bytes + 同 project 只上传一次（批量任务多行合并图片场景）
+        cache_key = self._build_upload_cache_key(image_bytes, normalized_project_id, "image")
+        if cache_key:
+            cached_media_id = self._uploaded_media_cache.get(cache_key)
+            if cached_media_id:
+                debug_logger.log_info(
+                    f"[UPLOAD DEDUP] image bytes+project 已命中缓存，media_id={cached_media_id}"
+                )
+                return cached_media_id
         # 转换视频aspect_ratio为图片aspect_ratio
         # VIDEO_ASPECT_RATIO_LANDSCAPE -> IMAGE_ASPECT_RATIO_LANDSCAPE
         # VIDEO_ASPECT_RATIO_PORTRAIT -> IMAGE_ASPECT_RATIO_PORTRAIT
@@ -2148,13 +2175,14 @@ class FlowClient:
                     or new_result.get("mediaGenerationId", {}).get("mediaGenerationId")
                 )
                 if media_id:
+                    if cache_key:
+                        self._uploaded_media_cache[cache_key] = media_id
                     return media_id
                 raise Exception(f"Invalid upload response: missing media id, keys={list(new_result.keys())}")
             except Exception as new_upload_error:
                 last_error = new_upload_error
                 retry_reason = "网络超时" if self._is_timeout_error(new_upload_error) else self._get_retry_reason(str(new_upload_error))
 
-                # 旧接口不携带 projectId，带项目上下文的上传一旦回退就可能把图片挂到错误项目。
                 if normalized_project_id:
                     debug_logger.log_error(
                         "[UPLOAD] Project-scoped /flow/uploadImage failed: "
@@ -2171,6 +2199,15 @@ class FlowClient:
                         "Project-scoped image upload failed via /flow/uploadImage; "
                         "legacy :uploadUserImage fallback is disabled because it may attach media "
                         f"to a different project (project_id={normalized_project_id})."
+                    ) from new_upload_error
+                # 旧接口不携带 projectId，带项目上下文的上传一旦回退就可能把图片挂到错误项目。
+                if normalized_project_id:
+                    # 重试 budget 用尽后，把上游原始 reason 一起带上抛出，方便排错。
+                    raise RuntimeError(
+                        "Project-scoped image upload failed via /flow/uploadImage; "
+                        "legacy :uploadUserImage fallback is disabled because it may attach media "
+                        f"to a different project (project_id={normalized_project_id}); "
+                        f"reason={new_upload_error}"
                     ) from new_upload_error
 
                 debug_logger.log_warning(
@@ -2202,6 +2239,8 @@ class FlowClient:
                     or legacy_result.get("media", {}).get("name")
                 )
                 if media_id:
+                    if cache_key:
+                        self._uploaded_media_cache[cache_key] = media_id
                     return media_id
                 raise Exception(f"Legacy upload response missing media id: keys={list(legacy_result.keys())}")
             except Exception as legacy_upload_error:
@@ -4992,6 +5031,29 @@ class FlowClient:
     def _generate_session_id(self) -> str:
         """生成sessionId: ;timestamp"""
         return f";{int(time.time() * 1000)}"
+
+    def _build_upload_cache_key(
+        self,
+        media_bytes: bytes,
+        project_id: str,
+        kind: str,
+    ) -> Optional[Tuple[str, str, str]]:
+        """为上传去重缓存生成稳定的 key。
+
+        仅当 project_id 非空时才参与去重；project_id 为空表示没有项目上下文，
+        此时不进行跨调用复用，避免把不同项目的 media_id 串用。
+        """
+        if not media_bytes:
+            return None
+        normalized_project_id = str(project_id or "").strip()
+        if not normalized_project_id:
+            return None
+        digest = hashlib.sha256(media_bytes).hexdigest()
+        return (digest, normalized_project_id, str(kind or "").strip().lower() or "image")
+
+    def clear_upload_cache(self) -> None:
+        """清空上传去重缓存（仅供测试使用）。"""
+        self._uploaded_media_cache.clear()
 
     def _generate_scene_id(self) -> str:
         """生成sceneId: UUID"""

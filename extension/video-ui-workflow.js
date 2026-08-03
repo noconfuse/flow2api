@@ -51,6 +51,26 @@
           await sleep(jitter);
           return jitter;
         };
+        // 单点延迟随机：把固定值 sleep 升级为 [min,max] 区间。
+        const jitteredSleep = async (baseMs, ratio = 0.3) => {
+          const base = Math.max(0, Number(baseMs) || 0);
+          const r = Math.max(0, Math.min(1, Number(ratio) || 0));
+          const low = Math.round(base * (1 - r));
+          const high = Math.round(base * (1 + r));
+          return humanPause(low, high);
+        };
+        // 在矩形内部做微动，落点仍属于该矩形（防止派到外部元素）。
+        const jitterPointInsideRect = (rect, jitter = 6) => {
+          const minX = rect.left + Math.min(8, rect.width / 4);
+          const maxX = rect.left + rect.width - Math.min(8, rect.width / 4);
+          const minY = rect.top + Math.min(8, rect.height / 4);
+          const maxY = rect.top + rect.height - Math.min(8, rect.height / 4);
+          const spanX = Math.max(0, maxX - minX);
+          const spanY = Math.max(0, maxY - minY);
+          const x = spanX > 0 ? minX + Math.random() * spanX : rect.left + rect.width / 2;
+          const y = spanY > 0 ? minY + Math.random() * spanY : rect.top + rect.height / 2;
+          return [Math.round(x), Math.round(y)];
+        };
         const steps = [];
 
         const visible = (node) => {
@@ -67,6 +87,8 @@
         };
 
         const textOf = (node) => String(node?.innerText || node?.textContent || "").replace(/\s+/g, " ").trim();
+        // 与 textOf 同步的字符串压缩规则：用于把 prompt 原始字符串跟 textOf 输出做包含比对
+        const compactText = (value) => String(value || "").replace(/\s+/g, " ").trim();
 
         const summarizeElement = (node) => {
           if (!(node instanceof Element)) {
@@ -94,7 +116,7 @@
           return null;
         };
 
-        const clickNode = (node, options = {}) => {
+        const clickNode = async (node, options = {}) => {
           if (!(node instanceof Element)) return false;
           const nativeOnly = !!options.nativeOnly;
           try {
@@ -103,8 +125,7 @@
             // ignore scroll failures
           }
           const rect = node.getBoundingClientRect();
-          const clientX = Math.round(rect.left + rect.width / 2);
-          const clientY = Math.round(rect.top + rect.height / 2);
+          const [clientX, clientY] = jitterPointInsideRect(rect, 6);
           const target = document.elementFromPoint(clientX, clientY) || node;
           const dispatchMouse = (targetNode, type, buttons) => {
             targetNode.dispatchEvent(new MouseEvent(type, {
@@ -120,7 +141,12 @@
           };
           try {
             if (!nativeOnly) {
+              // 点击前加一小段思考时间，模拟"看一眼再点"
+              await jitteredSleep(40, 0.5);
+              dispatchMouse(target, "mousemove", 0);
+              await jitteredSleep(20, 0.5);
               dispatchMouse(target, "mousedown", 1);
+              await jitteredSleep(30, 0.4);
               dispatchMouse(target, "mouseup", 0);
               dispatchMouse(target, "click", 0);
             }
@@ -283,6 +309,27 @@
             .filter((asset) => asset.media_id);
         };
 
+        // 注意：picker item 与 media_id 的唯一匹配路径是 src 属性里的 storage redirect URL
+        // （形如 /fx/api/trpc/media.getMediaUrlRedirect?name=<UUID>，其中 name= 后是 media_id）。
+        // picker tile 文本里只是 media.filename（如 "flow2api_upload_xxx.png 图片"），
+        // 这不是 media_id，不能作为匹配依据。
+        // 从 URL 中提取 ?name=<media_id> 这种参数。picker 渲染的 img.src 是
+        // /fx/api/trpc/media.getMediaUrlRedirect?name=<UUID>，其中 name= 后面是 media_id。
+        const extractMediaIdFromSrcUrl = (rawUrl) => {
+          if (!rawUrl) return "";
+          const match = String(rawUrl).match(/[?&](?:name|id)=([^&]+)/);
+          if (!match) return "";
+          try {
+            return decodeURIComponent(match[1]);
+          } catch (_error) {
+            return match[1];
+          }
+        };
+
+        // 收集 picker item 上 src URL 里的 media_id 字符串。
+        // picker 渲染的 img/video/source.src 形如
+        // /fx/api/trpc/media.getMediaUrlRedirect?name=<UUID>，其中 name= 后才是 media_id；
+        // tile 文本（filename 等）不参与匹配。
         const collectReferenceMediaIdStrings = (node) => {
           if (!(node instanceof Element)) return [];
           const values = [];
@@ -294,36 +341,38 @@
             values.push(normalized);
           };
 
-          pushValue(node.getAttribute("src"));
+          const ingestSrc = (rawSrc) => {
+            if (!rawSrc) return;
+            const extracted = extractMediaIdFromSrcUrl(rawSrc);
+            if (extracted) pushValue(extracted);
+          };
+
+          ingestSrc(node.getAttribute("src"));
 
           Array.from(node.querySelectorAll("img, video, source"))
             .slice(0, 12)
             .forEach((child) => {
               if (!(child instanceof Element)) return;
-              pushValue(child.getAttribute("src"));
+              ingestSrc(child.getAttribute("src"));
             });
 
           return values;
         };
 
         const findReferencePickerItemByAsset = (pickerItems, referenceAsset) => {
+          // picker 匹配唯一真源：节点 src URL 上的 ?name=<UUID>（来自 img/video/source）。
           const assetMediaId = normalizeUiToken(referenceAsset?.media_id || "");
-          const assetTexts = Array.isArray(referenceAsset?.reference_texts)
-            ? referenceAsset.reference_texts.map((item) => normalizeUiToken(item)).filter(Boolean)
-            : [];
+          if (!assetMediaId) return null;
           const scored = pickerItems
             .map((node, index) => {
               const strings = collectReferenceMediaIdStrings(node);
-              const text = normalizeUiToken(textOf(node));
-              const mediaIdMatched = !!assetMediaId && strings.some((value) => value.includes(assetMediaId));
-              const textMatched = !!assetTexts.length && assetTexts.some((value) => text.includes(value));
+              const matched = strings.some((value) => value.includes(assetMediaId));
               return {
                 index,
                 node,
                 strings: strings.slice(0, 8),
-                media_id_matched: mediaIdMatched,
-                text_matched: textMatched,
-                score: (mediaIdMatched ? 100 : 0) + (textMatched ? 20 : 0),
+                media_id_matched: matched,
+                score: matched ? 100 : 0,
               };
             })
             .filter((item) => item.score > 0)
@@ -510,7 +559,7 @@
             };
           }
           const targetItem = matchedItem.node;
-          clickNode(targetItem);
+          await clickNode(targetItem);
           const selected = await waitFor(
             () => {
               const timelineReady = getTimelineState(dialog);
@@ -527,7 +576,7 @@
             ok: !!selected,
             action: "clicked_reference_tile",
             tile: summarizeElement(targetItem),
-            match_strategy: matchedItem.media_id_matched ? "reference_asset_media_id" : "reference_asset_text",
+            match_strategy: "reference_asset_media_id",
             resolved_target_index: matchedItem.index,
             reference_asset: referenceAsset,
             picker_count: pickerItems.length,
@@ -610,7 +659,7 @@
           if (Number.isFinite(desiredEnd) && Math.abs(targetRight - baseRight) > 3) {
             await dragHandleTo(baseRight, targetRight, rightHandle.y);
           }
-          await sleep(260);
+          await jitteredSleep(260, 0.4);
           return {
             ok: true,
             skipped: false,
@@ -848,9 +897,9 @@
               if (rect.width > 0 && rect.height > 0) {
                 clickAtPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
               } else {
-                clickNode(chip, { nativeOnly: true });
+                await clickNode(chip, { nativeOnly: true });
               }
-              await sleep(220);
+              await jitteredSleep(220, 0.4);
               confirmed = await confirmClosed();
               attemptResults.push({ attempt: "chip_toggle", confirmed: !!confirmed, chip: summarizeElement(chip) });
             }
@@ -858,7 +907,7 @@
 
           if (!confirmed) {
             clickAtPoint(Math.max(8, Math.round(window.innerWidth * 0.08)), Math.max(8, Math.round(window.innerHeight * 0.12)));
-            await sleep(220);
+            await jitteredSleep(220, 0.4);
             confirmed = await confirmClosed();
             attemptResults.push({ attempt: "outside_click", confirmed: !!confirmed });
           }
@@ -1181,31 +1230,31 @@
             return dispatchKeyboard(closeButton, "Escape");
           };
           const attemptResults = [];
-          clickNode(closeButton, { nativeOnly: true });
+          await clickNode(closeButton, { nativeOnly: true });
           let confirmed = await confirmClosed();
           attemptResults.push({ attempt: "native_click", confirmed: !!confirmed });
           if (!confirmed) {
             tryCloseByPoint();
-            await sleep(220);
+            await jitteredSleep(220, 0.4);
             confirmed = await confirmClosed();
             attemptResults.push({ attempt: "point_click", confirmed: !!confirmed });
           }
           if (!confirmed) {
             tryCloseByHotspot();
-            await sleep(220);
+            await jitteredSleep(220, 0.4);
             confirmed = await confirmClosed();
             attemptResults.push({ attempt: "hotspot_click", confirmed: !!confirmed });
           }
           if (!confirmed) {
             closeButton.focus?.();
             dispatchKeyboard(closeButton, "Enter");
-            await sleep(220);
+            await jitteredSleep(220, 0.4);
             confirmed = await confirmClosed();
             attemptResults.push({ attempt: "enter_key", confirmed: !!confirmed });
           }
           if (!confirmed) {
             tryCloseByEscape();
-            await sleep(240);
+            await jitteredSleep(240, 0.4);
             confirmed = await confirmClosed();
             attemptResults.push({ attempt: "escape_key", confirmed: !!confirmed });
           }
@@ -1251,7 +1300,7 @@
         };
 
         const waitForComposerUiSettle = async (timeoutMs = 2200) => {
-          await sleep(220);
+          await jitteredSleep(220, 0.4);
           return await waitFor(() => {
             const drawer = getConversationDrawerSnapshot();
             const activeDialog = summarizeElement(getActiveDialog());
@@ -1357,8 +1406,8 @@
               } : null;
             }, 2600, 120);
           const attemptResults = [];
-          await sleep(120);
-          clickNode(agentChip, { nativeOnly: true });
+          await jitteredSleep(120, 0.4);
+          await clickNode(agentChip, { nativeOnly: true });
           let toggled = await confirmInactive();
           attemptResults.push({ attempt: "native_click", confirmed: !!toggled });
           if (!toggled) {
@@ -1367,21 +1416,21 @@
               Math.round(rect.left + rect.width / 2),
               Math.round(rect.top + rect.height / 2)
             );
-            await sleep(180);
+            await jitteredSleep(180, 0.4);
             toggled = await confirmInactive();
             attemptResults.push({ attempt: "point_click", confirmed: !!toggled });
           }
           if (!toggled) {
             agentChip.focus?.();
             dispatchKeyboard(agentChip, "Enter");
-            await sleep(180);
+            await jitteredSleep(180, 0.4);
             toggled = await confirmInactive();
             attemptResults.push({ attempt: "enter_key", confirmed: !!toggled });
           }
           if (!toggled) {
             agentChip.focus?.();
             dispatchKeyboard(agentChip, " ");
-            await sleep(180);
+            await jitteredSleep(180, 0.4);
             toggled = await confirmInactive();
             attemptResults.push({ attempt: "space_key", confirmed: !!toggled });
           }
@@ -1496,7 +1545,7 @@
           }
           const attempts = [];
 
-          clickNode(trigger);
+          await clickNode(trigger);
           const firstReady = await waitForGenerationModeMenuReady(targetMode, 700, 80);
           attempts.push({
             attempt: "clickNode",
@@ -1510,7 +1559,7 @@
 
           const rect = trigger.getBoundingClientRect();
           const fallbackClick = clickAtPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-          await sleep(220);
+          await jitteredSleep(220, 0.4);
           const secondReady = await waitForGenerationModeMenuReady(targetMode, 900, 80);
           attempts.push({
             attempt: "clickAtPoint",
@@ -1590,7 +1639,7 @@
           const directCandidate = collectGenerationModeTabCandidates(normalizedMode)[0]?.node || null;
           const trigger = findGenerationModeMenuTrigger();
           if (directCandidate) {
-            clickNode(directCandidate);
+            await clickNode(directCandidate);
           } else {
             if (!(trigger instanceof Element)) {
               return { ok: false, acted: false, reason: "mode_menu_trigger_not_found", target_mode: normalizedMode, prompt_state_before: before };
@@ -1598,7 +1647,7 @@
             const menuOpenResult = await openGenerationModeMenu(trigger, normalizedMode);
             const openedCandidate = menuOpenResult?.candidate || collectGenerationModeTabCandidates(normalizedMode)[0]?.node || null;
             if (openedCandidate) {
-              clickNode(openedCandidate);
+              await clickNode(openedCandidate);
             } else {
               const aliasClick = clickOverlayAlias(normalizedMode === "video" ? ["视频", "play_circle视频"] : ["图片", "image图片"]);
               if (!aliasClick?.click?.clicked) {
@@ -2019,12 +2068,12 @@
             const hoverY = preferredRect.top + preferredRect.height / 2;
             dispatchPointer("pointermove", hoverX, hoverY, 0);
             attemptResults.push({ attempt: "pointer_move", target: summarizeElement(preferredTarget) });
-            await sleep(180);
+            await jitteredSleep(180, 0.4);
           }
           if (preferredRect && preferredRect.width > 0 && preferredRect.height > 0) {
             const pointClick = clickAtPoint(preferredRect.left + preferredRect.width / 2, preferredRect.top + preferredRect.height / 2);
             attemptResults.push({ attempt: "point_click", target: summarizeElement(preferredTarget), click: pointClick });
-            await sleep(220);
+            await jitteredSleep(220, 0.4);
           }
           const afterOverlays = collectSettingsOverlayRoots().map((root) => summarizeElement(root));
           return {
@@ -2073,7 +2122,7 @@
           let overlayRoots = [];
           let optionMatch = null;
           for (let attempt = 0; attempt < 6; attempt += 1) {
-            await sleep(attempt === 0 ? (overlaysBeforeOpen.length ? 80 : 250) : 180);
+            await jitteredSleep(attempt === 0 ? (overlaysBeforeOpen.length ? 80 : 250) : 180, 0.4);
             overlayRoots = collectSettingsOverlayRoots();
             optionMatch = findSettingOptionCandidate(aliases);
             if (optionMatch?.candidate && overlayRoots.length && !optionMatch.candidate.inOverlay) {
@@ -2086,7 +2135,7 @@
             nestedModelOpen = await openModelDropdownInsideOverlay(before);
             if (nestedModelOpen?.opened) {
               for (let attempt = 0; attempt < 6; attempt += 1) {
-                await sleep(attempt === 0 ? 220 : 180);
+                await jitteredSleep(attempt === 0 ? 220 : 180, 0.4);
                 overlayRoots = collectSettingsOverlayRoots();
                 optionMatch = findSettingOptionCandidate(aliases);
                 if (optionMatch?.candidate && overlayRoots.length && !optionMatch.candidate.inOverlay) {
@@ -2125,10 +2174,10 @@
             clickAttempts.push({
               attempt: "native_click",
               target: summarizeElement(target),
-              clicked: clickNode(target, { nativeOnly: true }),
+              clicked: await clickNode(target, { nativeOnly: true }),
             });
           }
-          await sleep(320);
+          await jitteredSleep(320, 0.4);
           const after = await waitFor(() => {
             const current = parsePromptState();
             return verify(current) ? current : null;
@@ -2173,7 +2222,7 @@
             attemptResults.push({ attempt: "point_click", click: pointClick });
             menu = await waitFor(() => getOpenVideoSettingsMenuRoot(), 1800, 100);
           } else {
-            clickNode(chip, { nativeOnly: true });
+            await clickNode(chip, { nativeOnly: true });
             attemptResults.push({ attempt: "native_click", chip: summarizeElement(chip) });
             menu = await waitFor(() => getOpenVideoSettingsMenuRoot(), 1800, 100);
           }
@@ -2321,7 +2370,7 @@
               drawer_still_visible: drawerStillVisible,
             };
           }
-          await sleep(220);
+          await jitteredSleep(220, 0.4);
           const agentAction = await exitAgentModeIfNeeded();
           const postAgentChip = findAgentChipNode();
           const agentStillActive = !!postAgentChip && isAgentChipActive(postAgentChip);
@@ -2466,8 +2515,8 @@
             return { ok: true, skipped: true, reason: "empty_prompt", target: summarizeElement(target) };
           }
           const beforeText = textOf(target);
-          clickNode(target, { nativeOnly: true });
-          await sleep(80);
+          await clickNode(target, { nativeOnly: true });
+          await jitteredSleep(80, 0.4);
           target.focus();
           if (target.getAttribute("data-slate-editor") === "true") {
             const currentText = Array.from(target.querySelectorAll("[data-slate-string='true']"))
@@ -2479,9 +2528,9 @@
             const valueToInsert = `${needsLeadingSpace ? " " : ""}${promptValue}`;
             placeCaretAtEnd(target);
             const pasteDispatched = dispatchPasteText(target, valueToInsert);
-            await sleep(80);
+            await jitteredSleep(80, 0.4);
             let insertedText = textOf(target);
-            let inserted = insertedText.includes(promptValue);
+            let inserted = compactText(promptValue) ? insertedText.includes(compactText(promptValue)) : false;
             if (!inserted) {
               target.dispatchEvent(createInputEvent("beforeinput", valueToInsert));
               try {
@@ -2505,11 +2554,11 @@
               }
               target.dispatchEvent(createInputEvent("input", valueToInsert));
               target.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
-              await sleep(120);
+              await jitteredSleep(120, 0.4);
               insertedText = textOf(target);
             }
             return {
-              ok: insertedText.includes(promptValue),
+              ok: compactText(promptValue) ? insertedText.includes(compactText(promptValue)) : false,
               target: summarizeElement(target),
               before_text: beforeText.slice(0, 200),
               after_text: insertedText.slice(0, 240),
@@ -2537,7 +2586,7 @@
             target.dispatchEvent(createInputEvent("input", promptValue));
             target.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
           }
-          await sleep(200);
+          await jitteredSleep(200, 0.4);
           return {
             ok: true,
             target: summarizeElement(target),
@@ -2559,15 +2608,20 @@
             return { ok: true, skipped: true, reason: "empty_prompt_segment", target: summarizeElement(target) };
           }
           const beforeText = textOf(target);
-          clickNode(target, { nativeOnly: true });
-          await sleep(80);
+          // 不调用 clickNode(target, { nativeOnly: true })：合成 click event 在 Slate contenteditable 上
+          // 会触发 Flow 的 React 重渲染，导致 editor 被 unmount 后 6 秒内都找不到。
+          // 改为只 focus + placeCaretAtEnd，避开 click 副作用。
           target.focus();
+          await jitteredSleep(40, 0.4);
           if (target.getAttribute("data-slate-editor") === "true") {
             placeCaretAtEnd(target);
             const pasteDispatched = dispatchPasteText(target, valueToInsert);
-            await sleep(80);
+            await jitteredSleep(80, 0.4);
             let insertedText = textOf(target);
-            let inserted = insertedText.includes(valueToInsert.trim()) || insertedText.endsWith(valueToInsert);
+            const compactExpected = compactText(valueToInsert);
+            let inserted = compactExpected
+              ? insertedText.includes(compactExpected) || insertedText.endsWith(compactExpected)
+              : false;
             if (!inserted) {
               target.dispatchEvent(createInputEvent("beforeinput", valueToInsert));
               try {
@@ -2591,7 +2645,7 @@
               }
               target.dispatchEvent(createInputEvent("input", valueToInsert));
               target.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
-              await sleep(120);
+              await jitteredSleep(120, 0.4);
               insertedText = textOf(target);
             }
             return {
@@ -2613,11 +2667,11 @@
             return { ok: false, reason: "prompt_target_not_found" };
           }
           const beforeText = textOf(target);
-          if (document.activeElement !== target && !target.contains(document.activeElement)) {
-            clickNode(target, { nativeOnly: true });
-            await sleep(80);
-          }
+          // 不调用 clickNode：合成 click event 会触发 Flow 重渲染导致 editor 短时间消失。
           target.focus();
+          if (document.activeElement !== target && !target.contains(document.activeElement)) {
+            await jitteredSleep(60, 0.4);
+          }
           placeCaretAtEnd(target);
           dispatchPromptKeyEvent(target, "keydown", "Shift", {
             code: "ShiftLeft",
@@ -2641,7 +2695,7 @@
 
           let dialog = null;
           try {
-            await sleep(220);
+            await jitteredSleep(220, 0.4);
             dialog = getMediaPickerDialog();
           } finally {
             dispatchPromptKeyEvent(target, "keyup", "@", {
@@ -2681,7 +2735,7 @@
           if (!createLauncher) {
             return { ok: false, reason: "create_launcher_not_found", reference_asset: referenceAsset };
           }
-          clickNode(createLauncher);
+          await clickNode(createLauncher);
           await humanPause(320, 760);
           const dialog = await waitFor(() => getMediaPickerDialog(), 6000, 100);
           if (!dialog) {
@@ -2701,7 +2755,7 @@
           if (!addToPromptButton) {
             return { ok: false, reason: "add_to_prompt_button_not_found", reference_asset: referenceAsset };
           }
-          clickNode(addToPromptButton);
+          await clickNode(addToPromptButton);
           await waitFor(() => !getMediaPickerDialog() ? true : null, 4000, 100);
           await humanPause(420, 920);
           return { ok: true, reference_asset: referenceAsset, selection };
@@ -2732,7 +2786,9 @@
           for (const match of template.matchAll(mentionPattern)) {
             const slot = String(match[1] || "").trim().toLowerCase();
             const index = Number(match.index || 0);
-            const textChunk = template.slice(cursor, index);
+            // 去掉 chunk 尾部空白（包括 trailing \n），避免 paste 后 Slate 把它拆成空段
+            // 触发 "Cannot resolve a Slate node from DOM node" 的 React 重渲染崩溃
+            const textChunk = template.slice(cursor, index).replace(/\s+$/, "");
             if (textChunk) {
               const textResult = await appendPromptText(textChunk);
               operations.push({ type: "text", value: textChunk, result: textResult });
@@ -2762,15 +2818,15 @@
             if (!addToPromptButton) {
               return { ok: false, reason: "mention_add_button_not_found", slot, operations };
             }
-            clickNode(addToPromptButton);
+            await clickNode(addToPromptButton);
             await waitFor(() => !getMediaPickerDialog() ? true : null, 4000, 100);
             const promptTargetAfterAdd = await waitFor(() => findPromptTarget(), 4000, 100);
             if (promptTargetAfterAdd instanceof Element) {
-              clickNode(promptTargetAfterAdd, { nativeOnly: true });
-              await sleep(80);
+              await clickNode(promptTargetAfterAdd, { nativeOnly: true });
+              await jitteredSleep(80, 0.4);
               promptTargetAfterAdd.focus();
               placeCaretAtEnd(promptTargetAfterAdd);
-              await sleep(80);
+              await jitteredSleep(80, 0.4);
             }
             await humanPause(240, 580);
             cursor = index + match[0].length;
@@ -2806,7 +2862,7 @@
         };
 
         const waitForVideoComposerReady = async (timeoutMs = 9000) => {
-          await sleep(260);
+          await jitteredSleep(260, 0.4);
           return await waitFor(() => {
             const promptTarget = findPromptTarget();
             const settingsChip = collectVideoSettingsChipCandidates()[0]?.node || null;
@@ -2905,7 +2961,10 @@
           }
           await humanPause(260, 520);
 
-          const promptTemplate = String(jobPayload.prompt || "");
+          // 把 prompt 里所有空白（包括换行、连续空格）折叠成单空格：避免 Slate 把 paste 内容按 \n 拆成新 <p>
+          // （"Cannot resolve a Slate node from DOM node [object HTMLSpanElement]" 的根因是
+          // caret 在 editor 根 level、paste 含 \n，触发了围绕 inline void 的 split）。
+          const promptTemplate = String(jobPayload.prompt || "").replace(/\s+/g, " ").trim();
           const promptResult = mentionAssets.length
             ? await typePromptTemplateWithMentions(promptTemplate, referenceAssets)
             : await typePrompt(promptTemplate);
@@ -2933,9 +2992,9 @@
           if (!submitButton) {
             throw new Error("submit button not found");
           }
-          clickNode(submitButton, { nativeOnly: true });
+          await clickNode(submitButton, { nativeOnly: true });
           recordStep("submit_clicked", { button: summarizeElement(submitButton) });
-          await sleep(800);
+          await jitteredSleep(800, 0.3);
           const submitObserved = await waitFor(() => {
             const snapshot = getSubmitHookSnapshot();
             const entries = Array.isArray(snapshot?.entries) ? snapshot.entries : [];
